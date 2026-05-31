@@ -8,6 +8,7 @@ const AIRTABLE_TOKEN = process.env.AIRTABLE_TOKEN;
 const AIRTABLE_BASE_ID = process.env.AIRTABLE_BASE_ID || 'appEoktGjwEeUP9GX';
 const AIRTABLE_TABLE_NAME = process.env.AIRTABLE_TABLE_NAME || 'Bus routes';
 const CACHE_SECONDS = Number(process.env.CACHE_SECONDS || 10);
+const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || '';
 
 const FIELD_NAMES = {
   name: process.env.FIELD_NAME_BUS_NAME || 'Student Bus Screen Name',
@@ -23,10 +24,20 @@ let cache = {
   records: [],
 };
 
+const sseClients = new Set();
+
+app.use(express.json({ limit: '1mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
-function escapeFormulaText(value) {
-  return String(value).replace(/'/g, "\\'");
+function clearCache() {
+  cache = { fetchedAt: 0, records: [], recordsByScreen: {} };
+}
+
+function notifyDisplays() {
+  const payload = `data: ${JSON.stringify({ type: 'refresh', at: new Date().toISOString() })}\n\n`;
+  for (const client of sseClients) {
+    client.write(payload);
+  }
 }
 
 function buildFormula(screen) {
@@ -92,13 +103,14 @@ async function airtableRequest(url) {
   return response.json();
 }
 
-async function fetchRoutes(screen) {
+async function fetchRoutes(screen, options = {}) {
   if (!AIRTABLE_TOKEN) {
     throw new Error('Missing AIRTABLE_TOKEN environment variable. Add it in Render, not GitHub.');
   }
 
   const now = Date.now();
-  const cacheValid = cache.recordsByScreen && cache.recordsByScreen[screen] && now - cache.recordsByScreen[screen].fetchedAt < CACHE_SECONDS * 1000;
+  const skipCache = options.skipCache === true;
+  const cacheValid = !skipCache && cache.recordsByScreen && cache.recordsByScreen[screen] && now - cache.recordsByScreen[screen].fetchedAt < CACHE_SECONDS * 1000;
   if (cacheValid) {
     return cache.recordsByScreen[screen].records;
   }
@@ -139,6 +151,31 @@ async function fetchRoutes(screen) {
   return records;
 }
 
+app.get('/events', (req, res) => {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+  });
+  res.write(': connected\n\n');
+
+  sseClients.add(res);
+  req.on('close', () => {
+    sseClients.delete(res);
+  });
+});
+
+app.post('/webhook/airtable', (req, res) => {
+  const providedSecret = req.query.secret || req.headers['x-webhook-secret'] || '';
+  if (WEBHOOK_SECRET && providedSecret !== WEBHOOK_SECRET) {
+    return res.status(401).json({ error: 'Unauthorized webhook' });
+  }
+
+  clearCache();
+  notifyDisplays();
+  res.json({ ok: true, displaysNotified: sseClients.size });
+});
+
 app.get('/api/routes/:screen', async (req, res) => {
   const screen = req.params.screen;
   if (!['from-school', 'pri-dismissal', 'friday-dismissal'].includes(screen)) {
@@ -146,7 +183,8 @@ app.get('/api/routes/:screen', async (req, res) => {
   }
 
   try {
-    const routes = await fetchRoutes(screen);
+    const skipCache = req.query.fresh === '1';
+    const routes = await fetchRoutes(screen, { skipCache });
     res.json({ screen, updatedAt: new Date().toISOString(), routes });
   } catch (error) {
     console.error(error);
