@@ -22,9 +22,10 @@
 
     <script>
       const SCREEN_TITLES = {
-        '/from-school': 'From School Dismissal',
-        '/pri-dismissal': 'PRI Dismissal',
-        '/friday-dismissal': 'Friday Dismissal',
+        'from-school': 'From School Dismissal',
+        'pri-dismissal': 'PRI Dismissal',
+        'friday-dismissal': 'Friday Dismissal',
+        'current': 'Bus Dismissal',
       };
 
       const STATUS_CLASS = {
@@ -48,13 +49,13 @@
       };
 
       function getScreenKey() {
-        const path = window.location.pathname.replace(/^\//, '') || 'from-school';
-        if (['from-school', 'pri-dismissal', 'friday-dismissal'].includes(path)) return path;
-        return 'from-school';
+        const path = window.location.pathname.replace(/^\//, '') || 'current';
+        if (['current', 'from-school', 'pri-dismissal', 'friday-dismissal'].includes(path)) return path;
+        return 'current';
       }
 
-      function setTitle() {
-        const title = SCREEN_TITLES[window.location.pathname] || 'Bus Dismissal';
+      function setTitle(screenKey = getScreenKey()) {
+        const title = SCREEN_TITLES[screenKey] || 'Bus Dismissal';
         document.getElementById('screen-title').textContent = title;
         document.title = title;
       }
@@ -113,6 +114,7 @@
           if (!response.ok) throw new Error(data.error || 'Could not load bus routes.');
 
           errorBox.classList.add('hidden');
+          setTitle(data.screen || screen);
           renderRoutes(data.routes || []);
           document.getElementById('updated').textContent = `Updated ${formatTime(new Date(data.updatedAt))}`;
         } catch (error) {
