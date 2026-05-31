@@ -7,6 +7,8 @@ const PORT = process.env.PORT || 3000;
 const AIRTABLE_TOKEN = process.env.AIRTABLE_TOKEN;
 const AIRTABLE_BASE_ID = process.env.AIRTABLE_BASE_ID || 'appEoktGjwEeUP9GX';
 const AIRTABLE_TABLE_NAME = process.env.AIRTABLE_TABLE_NAME || 'Bus routes';
+const AIRTABLE_SPOTS_TABLE_NAME = process.env.AIRTABLE_SPOTS_TABLE_NAME || 'Bus Parking Spots';
+const AIRTABLE_SPOT_NAME_FIELD = process.env.AIRTABLE_SPOT_NAME_FIELD || 'Spot Name';
 const CACHE_SECONDS = Number(process.env.CACHE_SECONDS || 10);
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || '';
 
@@ -22,6 +24,9 @@ const FIELD_NAMES = {
 let cache = {
   fetchedAt: 0,
   records: [],
+  recordsByScreen: {},
+  spotNameMap: null,
+  spotNameMapFetchedAt: 0,
 };
 
 const sseClients = new Set();
@@ -30,7 +35,13 @@ app.use(express.json({ limit: '1mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
 function clearCache() {
-  cache = { fetchedAt: 0, records: [], recordsByScreen: {} };
+  cache = {
+    fetchedAt: 0,
+    records: [],
+    recordsByScreen: {},
+    spotNameMap: null,
+    spotNameMapFetchedAt: 0,
+  };
 }
 
 function notifyDisplays() {
@@ -63,27 +74,44 @@ function normalizeSingleSelect(value) {
   return String(value);
 }
 
-function normalizeLinkedSpot(value) {
-  if (!value) return '';
-  if (Array.isArray(value)) {
-    if (value.length === 0) return '';
-    return value.map((item) => {
-      if (typeof item === 'string') return item;
-      if (item && item.name) return item.name;
-      return String(item);
-    }).join(', ');
-  }
-  if (typeof value === 'object' && value.name) return value.name;
-  return String(value);
+function looksLikeAirtableRecordId(value) {
+  return typeof value === 'string' && /^rec[A-Za-z0-9]{14}$/.test(value);
 }
 
-function normalizeRecord(record) {
+function normalizeLinkedSpot(value, spotNameMap) {
+  if (!value) return '';
+
+  if (Array.isArray(value)) {
+    if (value.length === 0) return '';
+    return value
+      .map((item) => {
+        if (typeof item === 'string') {
+          return spotNameMap[item] || (looksLikeAirtableRecordId(item) ? '' : item);
+        }
+        if (item && item.id && spotNameMap[item.id]) return spotNameMap[item.id];
+        if (item && item.name) return item.name;
+        return '';
+      })
+      .filter(Boolean)
+      .join(', ');
+  }
+
+  if (typeof value === 'string') {
+    return spotNameMap[value] || (looksLikeAirtableRecordId(value) ? '' : value);
+  }
+
+  if (typeof value === 'object' && value.id && spotNameMap[value.id]) return spotNameMap[value.id];
+  if (typeof value === 'object' && value.name) return value.name;
+  return '';
+}
+
+function normalizeRecord(record, spotNameMap) {
   const fields = record.fields || {};
   return {
     id: record.id,
     name: fields[FIELD_NAMES.name] || 'Bus',
     status: normalizeSingleSelect(fields[FIELD_NAMES.status]) || 'Waiting',
-    spot: normalizeLinkedSpot(fields[FIELD_NAMES.spot]) || '',
+    spot: normalizeLinkedSpot(fields[FIELD_NAMES.spot], spotNameMap) || '',
     order: Number(fields[FIELD_NAMES.order] || 9999),
   };
 }
@@ -103,6 +131,42 @@ async function airtableRequest(url) {
   return response.json();
 }
 
+async function fetchSpotNameMap(options = {}) {
+  const now = Date.now();
+  const skipCache = options.skipCache === true;
+
+  if (!skipCache && cache.spotNameMap && now - cache.spotNameMapFetchedAt < CACHE_SECONDS * 1000) {
+    return cache.spotNameMap;
+  }
+
+  const params = new URLSearchParams();
+  params.set('pageSize', '100');
+  params.append('fields[]', AIRTABLE_SPOT_NAME_FIELD);
+
+  const encodedTable = encodeURIComponent(AIRTABLE_SPOTS_TABLE_NAME);
+  let url = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${encodedTable}?${params.toString()}`;
+  const spotNameMap = {};
+
+  while (url) {
+    const data = await airtableRequest(url);
+    for (const record of data.records || []) {
+      spotNameMap[record.id] = record.fields?.[AIRTABLE_SPOT_NAME_FIELD] || '';
+    }
+
+    if (data.offset) {
+      const nextParams = new URLSearchParams(params);
+      nextParams.set('offset', data.offset);
+      url = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${encodedTable}?${nextParams.toString()}`;
+    } else {
+      url = '';
+    }
+  }
+
+  cache.spotNameMap = spotNameMap;
+  cache.spotNameMapFetchedAt = now;
+  return spotNameMap;
+}
+
 async function fetchRoutes(screen, options = {}) {
   if (!AIRTABLE_TOKEN) {
     throw new Error('Missing AIRTABLE_TOKEN environment variable. Add it in Render, not GitHub.');
@@ -115,6 +179,7 @@ async function fetchRoutes(screen, options = {}) {
     return cache.recordsByScreen[screen].records;
   }
 
+  const spotNameMap = await fetchSpotNameMap({ skipCache });
   const formula = buildFormula(screen);
   const params = new URLSearchParams();
   params.set('pageSize', '100');
@@ -145,7 +210,10 @@ async function fetchRoutes(screen, options = {}) {
     }
   }
 
-  const records = allRecords.map(normalizeRecord).sort((a, b) => a.order - b.order || a.name.localeCompare(b.name));
+  const records = allRecords
+    .map((record) => normalizeRecord(record, spotNameMap))
+    .sort((a, b) => a.order - b.order || a.name.localeCompare(b.name));
+
   cache.recordsByScreen = cache.recordsByScreen || {};
   cache.recordsByScreen[screen] = { fetchedAt: now, records };
   return records;
