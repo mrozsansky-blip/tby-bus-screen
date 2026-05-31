@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TBY Bus Screen</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="screen-shell">
+      <header class="screen-header">
+        <div>
+          <p class="eyebrow">Tiferes Bais Yaakov</p>
+          <h1 id="screen-title">Bus Dismissal</h1>
+        </div>
+        <div class="meta">
+          <div id="clock" class="clock">--:--</div>
+          <div id="updated" class="updated">Loading...</div>
+        </div>
+      </header>
+
+      <section id="error" class="error hidden"></section>
+      <section id="bus-grid" class="bus-grid" aria-live="polite"></section>
+    </main>
+
+    <script>
+      const SCREEN_TITLES = {
+        '/from-school': 'From School Dismissal',
+        '/pri-dismissal': 'PRI Dismissal',
+        '/friday-dismissal': 'Friday Dismissal',
+      };
+
+      const STATUS_CLASS = {
+        'Waiting': 'waiting',
+        'Arrived': 'arrived',
+        'Loading': 'loading',
+        'Ready to Board': 'ready',
+        'Departed': 'departed',
+        'Delayed': 'delayed',
+        'Cancelled': 'cancelled',
+      };
+
+      function getScreenKey() {
+        const path = window.location.pathname.replace(/^\//, '') || 'from-school';
+        if (['from-school', 'pri-dismissal', 'friday-dismissal'].includes(path)) return path;
+        return 'from-school';
+      }
+
+      function setTitle() {
+        const title = SCREEN_TITLES[window.location.pathname] || 'Bus Dismissal';
+        document.getElementById('screen-title').textContent = title;
+        document.title = title;
+      }
+
+      function formatTime(date) {
+        return date.toLocaleTimeString('en-US', {
+          hour: 'numeric',
+          minute: '2-digit',
+        });
+      }
+
+      function updateClock() {
+        document.getElementById('clock').textContent = formatTime(new Date());
+      }
+
+      function renderRoutes(routes) {
+        const grid = document.getElementById('bus-grid');
+        if (!routes.length) {
+          grid.innerHTML = '<div class="empty">No bus routes are set for this screen.</div>';
+          return;
+        }
+
+        grid.innerHTML = routes.map((route) => {
+          const status = route.status || 'Waiting';
+          const statusClass = STATUS_CLASS[status] || 'waiting';
+          const spot = route.spot || '—';
+          return `
+            <article class="bus-card ${statusClass}">
+              <div class="bus-name">${escapeHtml(route.name)}</div>
+              <div class="bus-status">${escapeHtml(status)}</div>
+              <div class="bus-spot">${escapeHtml(spot)}</div>
+            </article>
+          `;
+        }).join('');
+      }
+
+      function escapeHtml(value) {
+        return String(value)
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#039;');
+      }
+
+      async function loadRoutes() {
+        const screen = getScreenKey();
+        const errorBox = document.getElementById('error');
+        try {
+          const response = await fetch(`/api/routes/${screen}`, { cache: 'no-store' });
+          const data = await response.json();
+          if (!response.ok) throw new Error(data.error || 'Could not load bus routes.');
+
+          errorBox.classList.add('hidden');
+          renderRoutes(data.routes || []);
+          document.getElementById('updated').textContent = `Updated ${formatTime(new Date(data.updatedAt))}`;
+        } catch (error) {
+          errorBox.textContent = error.message;
+          errorBox.classList.remove('hidden');
+        }
+      }
+
+      setTitle();
+      updateClock();
+      loadRoutes();
+      setInterval(updateClock, 1000);
+      setInterval(loadRoutes, 10000);
+    </script>
+  </body>
+</html>
