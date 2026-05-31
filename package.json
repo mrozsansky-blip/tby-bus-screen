@@ -1,0 +1,15 @@
+{
+  "name": "tby-bus-screen",
+  "version": "1.0.0",
+  "description": "Custom TBY bus dismissal screen backed by Airtable.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}
