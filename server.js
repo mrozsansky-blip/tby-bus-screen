@@ -11,6 +11,7 @@ const AIRTABLE_SPOTS_TABLE_NAME = process.env.AIRTABLE_SPOTS_TABLE_NAME || 'Bus 
 const AIRTABLE_SPOT_NAME_FIELD = process.env.AIRTABLE_SPOT_NAME_FIELD || 'Spot Name';
 const CACHE_SECONDS = Number(process.env.CACHE_SECONDS || 10);
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || '';
+const SCHOOL_TIME_ZONE = process.env.SCHOOL_TIME_ZONE || 'America/New_York';
 
 const FIELD_NAMES = {
   name: process.env.FIELD_NAME_BUS_NAME || 'Student Bus Screen Name',
@@ -51,7 +52,51 @@ function notifyDisplays() {
   }
 }
 
+function getSchoolNowParts() {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: SCHOOL_TIME_ZONE,
+    weekday: 'short',
+    hour: 'numeric',
+    minute: 'numeric',
+    hour12: false,
+  }).formatToParts(new Date());
+
+  const value = (type) => parts.find((part) => part.type === type)?.value || '';
+  return {
+    weekday: value('weekday'),
+    hour: Number(value('hour')),
+    minute: Number(value('minute')),
+  };
+}
+
+function chooseCurrentScreen() {
+  const { weekday, hour, minute } = getSchoolNowParts();
+  const minutes = hour * 60 + minute;
+
+  const fridayDismissal = 11 * 60 + 15;
+  const priDismissal = 14 * 60 + 30;
+  const regularDismissal = 15 * 60 + 30;
+
+  if (weekday === 'Fri') {
+    return 'friday-dismissal';
+  }
+
+  if (minutes < priDismissal) {
+    return 'pri-dismissal';
+  }
+
+  if (minutes < regularDismissal) {
+    return 'pri-dismissal';
+  }
+
+  return 'from-school';
+}
+
 function buildFormula(screen) {
+  if (screen === 'current') {
+    return buildFormula(chooseCurrentScreen());
+  }
+
   if (screen === 'from-school') {
     return `{${FIELD_NAMES.workflow}} = 'From School Dismissal'`;
   }
@@ -172,15 +217,16 @@ async function fetchRoutes(screen, options = {}) {
     throw new Error('Missing AIRTABLE_TOKEN environment variable. Add it in Render, not GitHub.');
   }
 
+  const resolvedScreen = screen === 'current' ? chooseCurrentScreen() : screen;
   const now = Date.now();
   const skipCache = options.skipCache === true;
-  const cacheValid = !skipCache && cache.recordsByScreen && cache.recordsByScreen[screen] && now - cache.recordsByScreen[screen].fetchedAt < CACHE_SECONDS * 1000;
+  const cacheValid = !skipCache && cache.recordsByScreen && cache.recordsByScreen[resolvedScreen] && now - cache.recordsByScreen[resolvedScreen].fetchedAt < CACHE_SECONDS * 1000;
   if (cacheValid) {
-    return cache.recordsByScreen[screen].records;
+    return { screen: resolvedScreen, routes: cache.recordsByScreen[resolvedScreen].records };
   }
 
   const spotNameMap = await fetchSpotNameMap({ skipCache });
-  const formula = buildFormula(screen);
+  const formula = buildFormula(resolvedScreen);
   const params = new URLSearchParams();
   params.set('pageSize', '100');
   params.set('sort[0][field]', FIELD_NAMES.order);
@@ -215,8 +261,8 @@ async function fetchRoutes(screen, options = {}) {
     .sort((a, b) => a.order - b.order || a.name.localeCompare(b.name));
 
   cache.recordsByScreen = cache.recordsByScreen || {};
-  cache.recordsByScreen[screen] = { fetchedAt: now, records };
-  return records;
+  cache.recordsByScreen[resolvedScreen] = { fetchedAt: now, records };
+  return { screen: resolvedScreen, routes: records };
 }
 
 app.get('/events', (req, res) => {
@@ -246,26 +292,26 @@ app.post('/webhook/airtable', (req, res) => {
 
 app.get('/api/routes/:screen', async (req, res) => {
   const screen = req.params.screen;
-  if (!['from-school', 'pri-dismissal', 'friday-dismissal'].includes(screen)) {
+  if (!['current', 'from-school', 'pri-dismissal', 'friday-dismissal'].includes(screen)) {
     return res.status(404).json({ error: 'Unknown screen' });
   }
 
   try {
     const skipCache = req.query.fresh === '1';
-    const routes = await fetchRoutes(screen, { skipCache });
-    res.json({ screen, updatedAt: new Date().toISOString(), routes });
+    const result = await fetchRoutes(screen, { skipCache });
+    res.json({ screen: result.screen, requestedScreen: screen, updatedAt: new Date().toISOString(), routes: result.routes });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: error.message });
   }
 });
 
-app.get(['/from-school', '/pri-dismissal', '/friday-dismissal'], (req, res) => {
+app.get(['/current', '/from-school', '/pri-dismissal', '/friday-dismissal'], (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
 app.get('/', (req, res) => {
-  res.redirect('/from-school');
+  res.redirect('/current');
 });
 
 app.listen(PORT, () => {
