@@ -103,11 +103,12 @@
           .replace(/'/g, '&#039;');
       }
 
-      async function loadRoutes() {
+      async function loadRoutes(forceFresh = false) {
         const screen = getScreenKey();
         const errorBox = document.getElementById('error');
         try {
-          const response = await fetch(`/api/routes/${screen}`, { cache: 'no-store' });
+          const fresh = forceFresh ? '?fresh=1' : '';
+          const response = await fetch(`/api/routes/${screen}${fresh}`, { cache: 'no-store' });
           const data = await response.json();
           if (!response.ok) throw new Error(data.error || 'Could not load bus routes.');
 
@@ -120,11 +121,21 @@
         }
       }
 
+      function connectInstantRefresh() {
+        if (!window.EventSource) return;
+        const source = new EventSource('/events');
+        source.onmessage = () => loadRoutes(true);
+        source.onerror = () => {
+          // The backup timer keeps the board fresh even if the live connection drops.
+        };
+      }
+
       setTitle();
       updateClock();
       loadRoutes();
+      connectInstantRefresh();
       setInterval(updateClock, 1000);
-      setInterval(loadRoutes, 10000);
+      setInterval(() => loadRoutes(true), 10000);
     </script>
   </body>
 </html>
