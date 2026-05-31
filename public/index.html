@@ -9,13 +9,10 @@
   <body>
     <main class="screen-shell">
       <header class="screen-header">
-        <div>
-          <p class="eyebrow">Tiferes Bais Yaakov</p>
-          <h1 id="screen-title">Bus Dismissal</h1>
-        </div>
+        <div id="screen-title" class="screen-title">Bus Dismissal</div>
         <div class="meta">
-          <div id="clock" class="clock">--:--</div>
-          <div id="updated" class="updated">Loading...</div>
+          <span id="clock" class="clock">--:--</span>
+          <span id="updated" class="updated">Loading...</span>
         </div>
       </header>
 
@@ -40,6 +37,16 @@
         'Cancelled': 'cancelled',
       };
 
+      const STATUS_LABEL = {
+        'Waiting': 'NOT HERE YET',
+        'Arrived': 'HERE',
+        'Loading': 'LOADING',
+        'Ready to Board': 'READY',
+        'Departed': 'LEFT',
+        'Delayed': 'DELAYED',
+        'Cancelled': 'CANCELLED',
+      };
+
       function getScreenKey() {
         const path = window.location.pathname.replace(/^\//, '') || 'from-school';
         if (['from-school', 'pri-dismissal', 'friday-dismissal'].includes(path)) return path;
@@ -56,7 +63,7 @@
         return date.toLocaleTimeString('en-US', {
           hour: 'numeric',
           minute: '2-digit',
-        });
+        }).replace(' ', '');
       }
 
       function updateClock() {
@@ -73,12 +80,15 @@
         grid.innerHTML = routes.map((route) => {
           const status = route.status || 'Waiting';
           const statusClass = STATUS_CLASS[status] || 'waiting';
-          const spot = route.spot || '—';
+          const statusLabel = STATUS_LABEL[status] || status.toUpperCase();
+          const spot = route.spot ? route.spot.toUpperCase() : '';
           return `
             <article class="bus-card ${statusClass}">
               <div class="bus-name">${escapeHtml(route.name)}</div>
-              <div class="bus-status">${escapeHtml(status)}</div>
-              <div class="bus-spot">${escapeHtml(spot)}</div>
+              <div class="bus-main">
+                <div class="bus-status">${escapeHtml(statusLabel)}</div>
+                ${spot ? `<div class="bus-spot">${escapeHtml(spot)}</div>` : ''}
+              </div>
             </article>
           `;
         }).join('');
