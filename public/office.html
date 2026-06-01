@@ -50,6 +50,9 @@
       let currentScreen = getScreenKey();
       let currentSpots = [];
       let busy = false;
+      let loading = false;
+      let loadController = null;
+      let loadTimer = null;
 
       function getScreenKey() {
         const path = window.location.pathname.replace(/^\/office\/?/, '') || 'from-school';
@@ -72,7 +75,7 @@
         box.className = `message ${type}`;
         box.classList.remove('hidden');
         window.clearTimeout(showMessage.timer);
-        showMessage.timer = window.setTimeout(() => box.classList.add('hidden'), 4500);
+        showMessage.timer = window.setTimeout(() => box.classList.add('hidden'), 5000);
       }
 
       function showPinBox() {
@@ -160,10 +163,15 @@
 
       async function api(path, options = {}) {
         const separator = path.includes('?') ? '&' : '?';
+        const controller = options.controller;
+        const cleanOptions = { ...options };
+        delete cleanOptions.controller;
+
         const response = await fetch(`${path}${separator}pin=${encodeURIComponent(officePin)}`, {
           cache: 'no-store',
           headers: { 'Content-Type': 'application/json', 'x-office-pin': officePin },
-          ...options,
+          signal: controller ? controller.signal : undefined,
+          ...cleanOptions,
         });
         const data = await response.json().catch(() => ({}));
         if (!response.ok) {
@@ -174,19 +182,24 @@
         return data;
       }
 
-      async function loadOffice() {
+      async function loadOffice(force = false) {
         if (!officePin) {
           showPinBox();
           return;
         }
+        if (loading && !force) return;
+        if (loadController) loadController.abort();
+        loadController = new AbortController();
+        loading = true;
 
         try {
-          const data = await api(`/api/office/${currentScreen}`);
+          const data = await api(`/api/office/${currentScreen}`, { controller: loadController });
           hidePinBox();
           currentSpots = data.spots || [];
           renderRoutes(data.routes || []);
           document.getElementById('updated').textContent = formatUpdated(data.updatedAt);
         } catch (error) {
+          if (error.name === 'AbortError') return;
           if (error.status === 401) {
             officePin = '';
             window.localStorage.removeItem('tbyOfficePin');
@@ -195,6 +208,8 @@
           } else {
             showMessage(error.message, 'error');
           }
+        } finally {
+          loading = false;
         }
       }
 
@@ -209,7 +224,7 @@
             body: JSON.stringify({ screen: currentScreen, spotId }),
           });
           showMessage(`Updated to ${data.to || data.status || 'next step'}.`, 'success');
-          await loadOffice();
+          await loadOffice(true);
         } catch (error) {
           showMessage(error.message, 'error');
         } finally {
@@ -228,7 +243,7 @@
             body: JSON.stringify({ screen: currentScreen, status, spotId, note: 'Manual office correction' }),
           });
           showMessage(`Changed to ${status}.`, 'success');
-          await loadOffice();
+          await loadOffice(true);
         } catch (error) {
           showMessage(error.message, 'error');
         } finally {
@@ -245,7 +260,7 @@
             body: JSON.stringify({ spotId }),
           });
           showMessage('Spot updated.', 'success');
-          await loadOffice();
+          await loadOffice(true);
         } catch (error) {
           showMessage(error.message, 'error');
         } finally {
@@ -262,17 +277,11 @@
           .replace(/'/g, '&#039;');
       }
 
-      function connectInstantRefresh() {
-        if (!window.EventSource) return;
-        const source = new EventSource('/events');
-        source.onmessage = () => loadOffice();
-      }
-
       document.getElementById('pin-form').addEventListener('submit', (event) => {
         event.preventDefault();
         officePin = document.getElementById('pin-input').value.trim();
         window.localStorage.setItem('tbyOfficePin', officePin);
-        loadOffice();
+        loadOffice(true);
       });
 
       document.getElementById('grid').addEventListener('click', (event) => {
@@ -290,10 +299,14 @@
         handleSpot(target.dataset.id, target.value);
       });
 
+      window.addEventListener('beforeunload', () => {
+        if (loadController) loadController.abort();
+        if (loadTimer) window.clearInterval(loadTimer);
+      });
+
       setTitle();
-      loadOffice();
-      connectInstantRefresh();
-      setInterval(loadOffice, 15000);
+      loadOffice(true);
+      loadTimer = setInterval(() => loadOffice(false), 30000);
     </script>
   </body>
 </html>
