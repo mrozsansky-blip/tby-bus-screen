@@ -34,7 +34,7 @@
       </section>
 
       <section id="message" class="message hidden"></section>
-      <section id="grid" class="route-grid"></section>
+      <section id="grid" class="route-grid compact"></section>
     </main>
 
     <script>
@@ -99,33 +99,25 @@
         return `Updated ${formatTime(value)}`;
       }
 
-      function nextButtonLabel(route) {
-        if (currentScreen === 'morning') return route.morningArrived ? 'ARRIVED' : 'MARK ARRIVED';
-        if (!route.status || route.status === 'Waiting' || route.status === 'Departed') return 'MARK ARRIVED';
-        if (route.status === 'Arrived') return 'MARK LOADING';
-        if (route.status === 'Loading' || route.status === 'Ready to Board') return 'MARK DEPARTED';
-        return 'NEXT STEP';
-      }
-
       function renderSpotSelect(route) {
         if (currentScreen === 'morning') return '';
         const options = ['<option value="">No spot</option>']
           .concat(currentSpots.map((spot) => `<option value="${escapeHtml(spot.id)}" ${spot.id === route.spotId ? 'selected' : ''}>${escapeHtml(spot.name)}</option>`))
           .join('');
         return `
-          <label class="spot-row">
-            <span>Parking Spot</span>
+          <label class="spot-row compact-spot">
+            <span>Spot</span>
             <select data-action="spot" data-id="${escapeHtml(route.id)}">${options}</select>
           </label>
         `;
       }
 
-      function renderManualButtons(route) {
+      function renderStatusButtons(route) {
         const buttons = STATUS_ORDER.map((status) => {
           const active = route.status === status;
           return `<button class="mini-btn ${active ? 'active' : ''}" data-action="status" data-id="${escapeHtml(route.id)}" data-status="${escapeHtml(status)}">${escapeHtml(status)}</button>`;
         }).join('');
-        return `<div class="manual-buttons">${buttons}</div>`;
+        return `<div class="manual-buttons compact-buttons">${buttons}</div>`;
       }
 
       function renderRoutes(routes) {
@@ -140,22 +132,19 @@
           const statusClass = status.toLowerCase().replace(/\s+/g, '-');
           return `
             <article class="route-card ${statusClass}">
-              <div class="card-top">
+              <div class="card-top compact-top">
                 <div class="bus-name">${escapeHtml(route.name)}</div>
                 <div class="status-pill">${escapeHtml(status)}</div>
               </div>
 
               ${renderSpotSelect(route)}
 
-              <div class="time-grid">
-                <div><span>Arrived</span><strong>${escapeHtml(formatTime(route.lastArrival))}</strong></div>
-                <div><span>Departed</span><strong>${escapeHtml(formatTime(route.lastDeparture))}</strong></div>
+              <div class="time-grid compact-times">
+                <div><span>Arr</span><strong>${escapeHtml(formatTime(route.lastArrival))}</strong></div>
+                <div><span>Dep</span><strong>${escapeHtml(formatTime(route.lastDeparture))}</strong></div>
               </div>
 
-              <button class="next-btn" data-action="next" data-id="${escapeHtml(route.id)}">${escapeHtml(nextButtonLabel(route))}</button>
-
-              <div class="correction-label">Correction</div>
-              ${renderManualButtons(route)}
+              ${renderStatusButtons(route)}
             </article>
           `;
         }).join('');
@@ -213,25 +202,6 @@
         }
       }
 
-      async function handleNext(recordId, routeCard) {
-        if (busy) return;
-        busy = true;
-        const spotSelect = routeCard.querySelector('select[data-action="spot"]');
-        const spotId = spotSelect ? spotSelect.value : '';
-        try {
-          const data = await api(`/api/office/route/${recordId}/next`, {
-            method: 'POST',
-            body: JSON.stringify({ screen: currentScreen, spotId }),
-          });
-          showMessage(`Updated to ${data.to || data.status || 'next step'}.`, 'success');
-          await loadOffice(true);
-        } catch (error) {
-          showMessage(error.message, 'error');
-        } finally {
-          busy = false;
-        }
-      }
-
       async function handleStatus(recordId, status, routeCard) {
         if (busy) return;
         busy = true;
@@ -240,7 +210,7 @@
         try {
           await api(`/api/office/route/${recordId}/status`, {
             method: 'POST',
-            body: JSON.stringify({ screen: currentScreen, status, spotId, note: 'Manual office correction' }),
+            body: JSON.stringify({ screen: currentScreen, status, spotId, note: 'Office status button' }),
           });
           showMessage(`Changed to ${status}.`, 'success');
           await loadOffice(true);
@@ -285,12 +255,10 @@
       });
 
       document.getElementById('grid').addEventListener('click', (event) => {
-        const target = event.target.closest('button[data-action]');
+        const target = event.target.closest('button[data-action="status"]');
         if (!target) return;
         const routeCard = target.closest('.route-card');
-        const recordId = target.dataset.id;
-        if (target.dataset.action === 'next') handleNext(recordId, routeCard);
-        if (target.dataset.action === 'status') handleStatus(recordId, target.dataset.status, routeCard);
+        handleStatus(target.dataset.id, target.dataset.status, routeCard);
       });
 
       document.getElementById('grid').addEventListener('change', (event) => {
