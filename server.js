@@ -9,8 +9,10 @@ const AIRTABLE_BASE_ID = process.env.AIRTABLE_BASE_ID || 'appEoktGjwEeUP9GX';
 const AIRTABLE_TABLE_NAME = process.env.AIRTABLE_TABLE_NAME || 'Bus routes';
 const AIRTABLE_SPOTS_TABLE_NAME = process.env.AIRTABLE_SPOTS_TABLE_NAME || 'Bus Parking Spots';
 const AIRTABLE_SPOT_NAME_FIELD = process.env.AIRTABLE_SPOT_NAME_FIELD || 'Spot Name';
+const AIRTABLE_EVENT_LOG_TABLE_NAME = process.env.AIRTABLE_EVENT_LOG_TABLE_NAME || 'Bus Route Event Log';
 const CACHE_SECONDS = Number(process.env.CACHE_SECONDS || 10);
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || '';
+const OFFICE_PIN = process.env.OFFICE_PIN || '';
 const SCHOOL_TIME_ZONE = process.env.SCHOOL_TIME_ZONE || 'America/New_York';
 
 const FIELD_NAMES = {
@@ -20,6 +22,21 @@ const FIELD_NAMES = {
   order: process.env.FIELD_NAME_ORDER || 'Student Bus Screen Order',
   workflow: process.env.FIELD_NAME_WORKFLOW || 'Route Workflow Type',
   friday: process.env.FIELD_NAME_FRIDAY || 'Use for Friday Dismissal',
+  lastArrival: process.env.FIELD_NAME_LAST_ARRIVAL || 'Last Arrival Time',
+  lastDeparture: process.env.FIELD_NAME_LAST_DEPARTURE || 'Last Departure Time',
+  lastEvent: process.env.FIELD_NAME_LAST_EVENT || 'Last Bus Event Time',
+  morningArrived: process.env.FIELD_NAME_MORNING_ARRIVED || 'Morning Bus Arrived',
+};
+
+const EVENT_LOG_FIELD_NAMES = {
+  route: process.env.EVENT_LOG_FIELD_ROUTE || 'Bus Route',
+  eventDate: process.env.EVENT_LOG_FIELD_DATE || 'Event Date',
+  eventType: process.env.EVENT_LOG_FIELD_TYPE || 'Event Type',
+  eventTime: process.env.EVENT_LOG_FIELD_TIME || 'Event Time',
+  statusAfter: process.env.EVENT_LOG_FIELD_STATUS_AFTER || 'Student Screen Status After Event',
+  routeDirection: process.env.EVENT_LOG_FIELD_DIRECTION || 'Route Direction',
+  spot: process.env.EVENT_LOG_FIELD_SPOT || 'Parking Spot',
+  note: process.env.EVENT_LOG_FIELD_NOTE || 'Note',
 };
 
 let cache = {
@@ -27,6 +44,7 @@ let cache = {
   records: [],
   recordsByScreen: {},
   spotNameMap: null,
+  spotList: null,
   spotNameMapFetchedAt: 0,
 };
 
@@ -41,6 +59,7 @@ function clearCache() {
     records: [],
     recordsByScreen: {},
     spotNameMap: null,
+    spotList: null,
     spotNameMapFetchedAt: 0,
   };
 }
@@ -73,39 +92,36 @@ function chooseCurrentScreen() {
   const { weekday, hour, minute } = getSchoolNowParts();
   const minutes = hour * 60 + minute;
 
-  const fridayDismissal = 11 * 60 + 15;
   const priDismissal = 14 * 60 + 30;
   const regularDismissal = 15 * 60 + 30;
 
-  if (weekday === 'Fri') {
-    return 'friday-dismissal';
-  }
-
-  if (minutes < priDismissal) {
-    return 'pri-dismissal';
-  }
-
-  if (minutes < regularDismissal) {
-    return 'pri-dismissal';
-  }
-
+  if (weekday === 'Fri') return 'friday-dismissal';
+  if (minutes < priDismissal) return 'pri-dismissal';
+  if (minutes < regularDismissal) return 'pri-dismissal';
   return 'from-school';
 }
 
+function normalizeScreen(screen) {
+  if (screen === 'current') return chooseCurrentScreen();
+  return screen;
+}
+
 function buildFormula(screen) {
-  if (screen === 'current') {
-    return buildFormula(chooseCurrentScreen());
+  const resolvedScreen = normalizeScreen(screen);
+
+  if (resolvedScreen === 'morning') {
+    return `{${FIELD_NAMES.workflow}} = 'To School Arrival Only'`;
   }
 
-  if (screen === 'from-school') {
+  if (resolvedScreen === 'from-school') {
     return `{${FIELD_NAMES.workflow}} = 'From School Dismissal'`;
   }
 
-  if (screen === 'pri-dismissal') {
+  if (resolvedScreen === 'pri-dismissal') {
     return `{${FIELD_NAMES.workflow}} = 'PRI Dismissal'`;
   }
 
-  if (screen === 'friday-dismissal') {
+  if (resolvedScreen === 'friday-dismissal') {
     return `{${FIELD_NAMES.friday}} = 1`;
   }
 
@@ -121,6 +137,22 @@ function normalizeSingleSelect(value) {
 
 function looksLikeAirtableRecordId(value) {
   return typeof value === 'string' && /^rec[A-Za-z0-9]{14}$/.test(value);
+}
+
+function getLinkedRecordIds(value) {
+  if (!value) return [];
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => {
+        if (typeof item === 'string') return item;
+        if (item && item.id) return item.id;
+        return '';
+      })
+      .filter(Boolean);
+  }
+  if (typeof value === 'string') return [value];
+  if (typeof value === 'object' && value.id) return [value.id];
+  return [];
 }
 
 function normalizeLinkedSpot(value, spotNameMap) {
@@ -157,14 +189,63 @@ function normalizeRecord(record, spotNameMap) {
     name: fields[FIELD_NAMES.name] || 'Bus',
     status: normalizeSingleSelect(fields[FIELD_NAMES.status]) || 'Waiting',
     spot: normalizeLinkedSpot(fields[FIELD_NAMES.spot], spotNameMap) || '',
+    spotId: getLinkedRecordIds(fields[FIELD_NAMES.spot])[0] || '',
     order: Number(fields[FIELD_NAMES.order] || 9999),
   };
 }
 
-async function airtableRequest(url) {
+function normalizeOfficeRecord(record, spotNameMap) {
+  const fields = record.fields || {};
+  return {
+    ...normalizeRecord(record, spotNameMap),
+    workflow: normalizeSingleSelect(fields[FIELD_NAMES.workflow]),
+    lastArrival: fields[FIELD_NAMES.lastArrival] || '',
+    lastDeparture: fields[FIELD_NAMES.lastDeparture] || '',
+    lastEvent: fields[FIELD_NAMES.lastEvent] || '',
+    morningArrived: Boolean(fields[FIELD_NAMES.morningArrived]),
+  };
+}
+
+function assertAirtableReady() {
+  if (!AIRTABLE_TOKEN) {
+    throw new Error('Missing AIRTABLE_TOKEN environment variable. Add it in Render, not GitHub.');
+  }
+}
+
+function getOfficePin(req) {
+  return req.query.pin || req.headers['x-office-pin'] || req.body?.pin || '';
+}
+
+function validateOfficePin(req, res) {
+  if (!OFFICE_PIN) return true;
+  if (getOfficePin(req) === OFFICE_PIN) return true;
+  res.status(401).json({ error: 'Invalid office PIN' });
+  return false;
+}
+
+function toSchoolDateString(date = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: SCHOOL_TIME_ZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(date);
+  const get = (type) => parts.find((part) => part.type === type)?.value;
+  return `${get('year')}-${get('month')}-${get('day')}`;
+}
+
+function formatForAirtableDateTime(date = new Date()) {
+  return date.toISOString();
+}
+
+async function airtableRequest(url, options = {}) {
+  assertAirtableReady();
   const response = await fetch(url, {
+    ...options,
     headers: {
       Authorization: `Bearer ${AIRTABLE_TOKEN}`,
+      'Content-Type': 'application/json',
+      ...(options.headers || {}),
     },
   });
 
@@ -173,14 +254,19 @@ async function airtableRequest(url) {
     throw new Error(`Airtable error ${response.status}: ${text}`);
   }
 
+  if (response.status === 204) return {};
   return response.json();
+}
+
+function airtableTableUrl(tableNameOrId) {
+  return `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${encodeURIComponent(tableNameOrId)}`;
 }
 
 async function fetchSpotNameMap(options = {}) {
   const now = Date.now();
   const skipCache = options.skipCache === true;
 
-  if (!skipCache && cache.spotNameMap && now - cache.spotNameMapFetchedAt < CACHE_SECONDS * 1000) {
+  if (!skipCache && cache.spotNameMap && cache.spotList && now - cache.spotNameMapFetchedAt < CACHE_SECONDS * 1000) {
     return cache.spotNameMap;
   }
 
@@ -188,36 +274,38 @@ async function fetchSpotNameMap(options = {}) {
   params.set('pageSize', '100');
   params.append('fields[]', AIRTABLE_SPOT_NAME_FIELD);
 
-  const encodedTable = encodeURIComponent(AIRTABLE_SPOTS_TABLE_NAME);
-  let url = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${encodedTable}?${params.toString()}`;
+  let url = `${airtableTableUrl(AIRTABLE_SPOTS_TABLE_NAME)}?${params.toString()}`;
   const spotNameMap = {};
+  const spotList = [];
 
   while (url) {
     const data = await airtableRequest(url);
     for (const record of data.records || []) {
-      spotNameMap[record.id] = record.fields?.[AIRTABLE_SPOT_NAME_FIELD] || '';
+      const name = record.fields?.[AIRTABLE_SPOT_NAME_FIELD] || '';
+      spotNameMap[record.id] = name;
+      spotList.push({ id: record.id, name });
     }
 
     if (data.offset) {
       const nextParams = new URLSearchParams(params);
       nextParams.set('offset', data.offset);
-      url = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${encodedTable}?${nextParams.toString()}`;
+      url = `${airtableTableUrl(AIRTABLE_SPOTS_TABLE_NAME)}?${nextParams.toString()}`;
     } else {
       url = '';
     }
   }
 
+  spotList.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
   cache.spotNameMap = spotNameMap;
+  cache.spotList = spotList;
   cache.spotNameMapFetchedAt = now;
   return spotNameMap;
 }
 
 async function fetchRoutes(screen, options = {}) {
-  if (!AIRTABLE_TOKEN) {
-    throw new Error('Missing AIRTABLE_TOKEN environment variable. Add it in Render, not GitHub.');
-  }
+  assertAirtableReady();
 
-  const resolvedScreen = screen === 'current' ? chooseCurrentScreen() : screen;
+  const resolvedScreen = normalizeScreen(screen);
   const now = Date.now();
   const skipCache = options.skipCache === true;
   const cacheValid = !skipCache && cache.recordsByScreen && cache.recordsByScreen[resolvedScreen] && now - cache.recordsByScreen[resolvedScreen].fetchedAt < CACHE_SECONDS * 1000;
@@ -239,8 +327,7 @@ async function fetchRoutes(screen, options = {}) {
   params.append('fields[]', FIELD_NAMES.friday);
   if (formula) params.set('filterByFormula', formula);
 
-  const encodedTable = encodeURIComponent(AIRTABLE_TABLE_NAME);
-  let url = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${encodedTable}?${params.toString()}`;
+  let url = `${airtableTableUrl(AIRTABLE_TABLE_NAME)}?${params.toString()}`;
   let allRecords = [];
 
   while (url) {
@@ -250,7 +337,7 @@ async function fetchRoutes(screen, options = {}) {
     if (data.offset) {
       const nextParams = new URLSearchParams(params);
       nextParams.set('offset', data.offset);
-      url = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${encodedTable}?${nextParams.toString()}`;
+      url = `${airtableTableUrl(AIRTABLE_TABLE_NAME)}?${nextParams.toString()}`;
     } else {
       url = '';
     }
@@ -263,6 +350,132 @@ async function fetchRoutes(screen, options = {}) {
   cache.recordsByScreen = cache.recordsByScreen || {};
   cache.recordsByScreen[resolvedScreen] = { fetchedAt: now, records };
   return { screen: resolvedScreen, routes: records };
+}
+
+async function fetchOfficeRoutes(screen, options = {}) {
+  assertAirtableReady();
+  const resolvedScreen = normalizeScreen(screen);
+  const spotNameMap = await fetchSpotNameMap(options);
+  const formula = buildFormula(resolvedScreen);
+  const params = new URLSearchParams();
+  params.set('pageSize', '100');
+  params.set('sort[0][field]', FIELD_NAMES.order);
+  params.set('sort[0][direction]', 'asc');
+  params.append('fields[]', FIELD_NAMES.name);
+  params.append('fields[]', FIELD_NAMES.status);
+  params.append('fields[]', FIELD_NAMES.spot);
+  params.append('fields[]', FIELD_NAMES.order);
+  params.append('fields[]', FIELD_NAMES.workflow);
+  params.append('fields[]', FIELD_NAMES.friday);
+  params.append('fields[]', FIELD_NAMES.lastArrival);
+  params.append('fields[]', FIELD_NAMES.lastDeparture);
+  params.append('fields[]', FIELD_NAMES.lastEvent);
+  params.append('fields[]', FIELD_NAMES.morningArrived);
+  if (formula) params.set('filterByFormula', formula);
+
+  let url = `${airtableTableUrl(AIRTABLE_TABLE_NAME)}?${params.toString()}`;
+  let allRecords = [];
+
+  while (url) {
+    const data = await airtableRequest(url);
+    allRecords = allRecords.concat(data.records || []);
+    if (data.offset) {
+      const nextParams = new URLSearchParams(params);
+      nextParams.set('offset', data.offset);
+      url = `${airtableTableUrl(AIRTABLE_TABLE_NAME)}?${nextParams.toString()}`;
+    } else {
+      url = '';
+    }
+  }
+
+  const routes = allRecords
+    .map((record) => normalizeOfficeRecord(record, spotNameMap))
+    .sort((a, b) => a.order - b.order || a.name.localeCompare(b.name));
+
+  return { screen: resolvedScreen, routes, spots: cache.spotList || [] };
+}
+
+async function fetchRouteRecord(recordId) {
+  const params = new URLSearchParams();
+  params.append('fields[]', FIELD_NAMES.name);
+  params.append('fields[]', FIELD_NAMES.status);
+  params.append('fields[]', FIELD_NAMES.spot);
+  params.append('fields[]', FIELD_NAMES.workflow);
+  params.append('fields[]', FIELD_NAMES.lastArrival);
+  params.append('fields[]', FIELD_NAMES.lastDeparture);
+  params.append('fields[]', FIELD_NAMES.lastEvent);
+  params.append('fields[]', FIELD_NAMES.morningArrived);
+  const url = `${airtableTableUrl(AIRTABLE_TABLE_NAME)}/${recordId}?${params.toString()}`;
+  return airtableRequest(url);
+}
+
+async function updateRouteRecord(recordId, fields) {
+  const data = await airtableRequest(airtableTableUrl(AIRTABLE_TABLE_NAME), {
+    method: 'PATCH',
+    body: JSON.stringify({
+      typecast: true,
+      records: [{ id: recordId, fields }],
+    }),
+  });
+  return data.records?.[0];
+}
+
+async function createEventLog({ recordId, eventType, statusAfter, routeDirection, spotId, note, now }) {
+  const fields = {
+    [EVENT_LOG_FIELD_NAMES.route]: [recordId],
+    [EVENT_LOG_FIELD_NAMES.eventType]: eventType,
+    [EVENT_LOG_FIELD_NAMES.eventTime]: formatForAirtableDateTime(now),
+    [EVENT_LOG_FIELD_NAMES.eventDate]: toSchoolDateString(now),
+    [EVENT_LOG_FIELD_NAMES.statusAfter]: statusAfter,
+    [EVENT_LOG_FIELD_NAMES.routeDirection]: routeDirection || '',
+  };
+
+  if (spotId) fields[EVENT_LOG_FIELD_NAMES.spot] = [spotId];
+  if (note) fields[EVENT_LOG_FIELD_NAMES.note] = note;
+
+  try {
+    await airtableRequest(airtableTableUrl(AIRTABLE_EVENT_LOG_TABLE_NAME), {
+      method: 'POST',
+      body: JSON.stringify({ typecast: true, records: [{ fields }] }),
+    });
+  } catch (error) {
+    console.error('Could not create event log record:', error.message);
+  }
+}
+
+function getNextStatus(currentStatus) {
+  if (!currentStatus || currentStatus === 'Waiting' || currentStatus === 'Departed') return 'Arrived';
+  if (currentStatus === 'Arrived') return 'Loading';
+  if (currentStatus === 'Loading') return 'Departed';
+  if (currentStatus === 'Ready to Board') return 'Departed';
+  return 'Arrived';
+}
+
+function buildStatusUpdateFields({ targetStatus, now, spotId, isMorning }) {
+  const fields = {
+    [FIELD_NAMES.status]: targetStatus,
+    [FIELD_NAMES.lastEvent]: formatForAirtableDateTime(now),
+  };
+
+  if (targetStatus === 'Waiting') {
+    fields[FIELD_NAMES.spot] = [];
+    fields[FIELD_NAMES.lastArrival] = null;
+    fields[FIELD_NAMES.lastDeparture] = null;
+    if (isMorning) fields[FIELD_NAMES.morningArrived] = false;
+  }
+
+  if (targetStatus === 'Arrived') {
+    fields[FIELD_NAMES.lastArrival] = formatForAirtableDateTime(now);
+    if (isMorning) fields[FIELD_NAMES.morningArrived] = true;
+    if (spotId && !isMorning) fields[FIELD_NAMES.spot] = [spotId];
+  }
+
+  if (targetStatus === 'Departed') {
+    fields[FIELD_NAMES.lastDeparture] = formatForAirtableDateTime(now);
+    fields[FIELD_NAMES.spot] = [];
+  }
+
+  return fields;
 }
 
 app.get('/events', (req, res) => {
@@ -304,6 +517,116 @@ app.get('/api/routes/:screen', async (req, res) => {
     console.error(error);
     res.status(500).json({ error: error.message });
   }
+});
+
+app.get('/api/office/:screen', async (req, res) => {
+  if (!validateOfficePin(req, res)) return;
+  const screen = req.params.screen;
+  if (!['morning', 'current', 'from-school', 'pri-dismissal', 'friday-dismissal'].includes(screen)) {
+    return res.status(404).json({ error: 'Unknown office screen' });
+  }
+
+  try {
+    const result = await fetchOfficeRoutes(screen, { skipCache: true });
+    res.json({ ...result, requestedScreen: screen, updatedAt: new Date().toISOString() });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/office/route/:recordId/spot', async (req, res) => {
+  if (!validateOfficePin(req, res)) return;
+
+  try {
+    const spotId = req.body?.spotId || '';
+    await updateRouteRecord(req.params.recordId, {
+      [FIELD_NAMES.spot]: spotId ? [spotId] : [],
+      [FIELD_NAMES.lastEvent]: formatForAirtableDateTime(new Date()),
+    });
+    clearCache();
+    notifyDisplays();
+    res.json({ ok: true });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/office/route/:recordId/status', async (req, res) => {
+  if (!validateOfficePin(req, res)) return;
+
+  try {
+    const targetStatus = req.body?.status;
+    if (!['Waiting', 'Arrived', 'Loading', 'Ready to Board', 'Departed', 'Delayed', 'Cancelled'].includes(targetStatus)) {
+      return res.status(400).json({ error: 'Invalid status' });
+    }
+
+    const now = new Date();
+    const isMorning = req.body?.screen === 'morning';
+    const routeRecord = await fetchRouteRecord(req.params.recordId);
+    const fields = routeRecord.fields || {};
+    const spotId = req.body?.spotId || getLinkedRecordIds(fields[FIELD_NAMES.spot])[0] || '';
+
+    const updateFields = buildStatusUpdateFields({ targetStatus, now, spotId, isMorning });
+    await updateRouteRecord(req.params.recordId, updateFields);
+    await createEventLog({
+      recordId: req.params.recordId,
+      eventType: targetStatus,
+      statusAfter: targetStatus,
+      routeDirection: isMorning ? 'To School' : normalizeSingleSelect(fields[FIELD_NAMES.workflow]),
+      spotId,
+      note: req.body?.note || '',
+      now,
+    });
+
+    clearCache();
+    notifyDisplays();
+    res.json({ ok: true, status: targetStatus });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/office/route/:recordId/next', async (req, res) => {
+  if (!validateOfficePin(req, res)) return;
+
+  try {
+    const now = new Date();
+    const isMorning = req.body?.screen === 'morning';
+    const routeRecord = await fetchRouteRecord(req.params.recordId);
+    const fields = routeRecord.fields || {};
+    const currentStatus = normalizeSingleSelect(fields[FIELD_NAMES.status]) || 'Waiting';
+    const targetStatus = isMorning ? 'Arrived' : getNextStatus(currentStatus);
+    const spotId = req.body?.spotId || getLinkedRecordIds(fields[FIELD_NAMES.spot])[0] || '';
+
+    if (!isMorning && targetStatus === 'Arrived' && !spotId) {
+      return res.status(400).json({ error: 'Choose a parking spot before marking this bus arrived.' });
+    }
+
+    const updateFields = buildStatusUpdateFields({ targetStatus, now, spotId, isMorning });
+    await updateRouteRecord(req.params.recordId, updateFields);
+    await createEventLog({
+      recordId: req.params.recordId,
+      eventType: targetStatus,
+      statusAfter: targetStatus,
+      routeDirection: isMorning ? 'To School' : normalizeSingleSelect(fields[FIELD_NAMES.workflow]),
+      spotId,
+      now,
+    });
+
+    clearCache();
+    notifyDisplays();
+    res.json({ ok: true, from: currentStatus, to: targetStatus });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get(['/office', '/office/morning', '/office/from-school', '/office/pri-dismissal', '/office/friday-dismissal'], (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'office.html'));
 });
 
 app.get(['/current', '/from-school', '/pri-dismissal', '/friday-dismissal'], (req, res) => {
