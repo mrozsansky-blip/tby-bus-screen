@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TBY Bus Office</title>
+    <link rel="stylesheet" href="/office.css" />
+  </head>
+  <body>
+    <main class="office-shell">
+      <header class="office-header">
+        <div>
+          <div class="eyebrow">TBY Bus Office</div>
+          <h1 id="page-title">Office Controls</h1>
+        </div>
+        <div class="header-right">
+          <nav class="tabs">
+            <a href="/office/morning" data-screen="morning">Morning</a>
+            <a href="/office/pri-dismissal" data-screen="pri-dismissal">PRI</a>
+            <a href="/office/from-school" data-screen="from-school">From School</a>
+            <a href="/office/friday-dismissal" data-screen="friday-dismissal">Friday</a>
+          </nav>
+          <div id="updated" class="updated">Loading...</div>
+        </div>
+      </header>
+
+      <section id="pin-box" class="pin-box hidden">
+        <h2>Office PIN</h2>
+        <p>Enter the office PIN to update buses.</p>
+        <form id="pin-form">
+          <input id="pin-input" type="password" inputmode="numeric" autocomplete="current-password" placeholder="PIN" />
+          <button type="submit">Open Office Page</button>
+        </form>
+      </section>
+
+      <section id="message" class="message hidden"></section>
+      <section id="grid" class="route-grid"></section>
+    </main>
+
+    <script>
+      const SCREEN_TITLES = {
+        morning: 'Morning Bus Arrival',
+        'from-school': 'From School Dismissal',
+        'pri-dismissal': 'PRI Dismissal',
+        'friday-dismissal': 'Friday Dismissal',
+      };
+
+      const STATUS_ORDER = ['Waiting', 'Arrived', 'Loading', 'Departed'];
+      let officePin = window.localStorage.getItem('tbyOfficePin') || '';
+      let currentScreen = getScreenKey();
+      let currentSpots = [];
+      let busy = false;
+
+      function getScreenKey() {
+        const path = window.location.pathname.replace(/^\/office\/?/, '') || 'from-school';
+        if (['morning', 'from-school', 'pri-dismissal', 'friday-dismissal'].includes(path)) return path;
+        return 'from-school';
+      }
+
+      function setTitle() {
+        const title = SCREEN_TITLES[currentScreen] || 'Office Controls';
+        document.getElementById('page-title').textContent = title;
+        document.title = `TBY Bus Office - ${title}`;
+        document.querySelectorAll('.tabs a').forEach((link) => {
+          link.classList.toggle('active', link.dataset.screen === currentScreen);
+        });
+      }
+
+      function showMessage(text, type = 'info') {
+        const box = document.getElementById('message');
+        box.textContent = text;
+        box.className = `message ${type}`;
+        box.classList.remove('hidden');
+        window.clearTimeout(showMessage.timer);
+        showMessage.timer = window.setTimeout(() => box.classList.add('hidden'), 4500);
+      }
+
+      function showPinBox() {
+        document.getElementById('pin-box').classList.remove('hidden');
+        document.getElementById('grid').innerHTML = '';
+      }
+
+      function hidePinBox() {
+        document.getElementById('pin-box').classList.add('hidden');
+      }
+
+      function formatTime(value) {
+        if (!value) return '--';
+        const date = new Date(value);
+        if (Number.isNaN(date.getTime())) return value;
+        return date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+      }
+
+      function formatUpdated(value) {
+        if (!value) return 'Updated --';
+        return `Updated ${formatTime(value)}`;
+      }
+
+      function nextButtonLabel(route) {
+        if (currentScreen === 'morning') return route.morningArrived ? 'ARRIVED' : 'MARK ARRIVED';
+        if (!route.status || route.status === 'Waiting' || route.status === 'Departed') return 'MARK ARRIVED';
+        if (route.status === 'Arrived') return 'MARK LOADING';
+        if (route.status === 'Loading' || route.status === 'Ready to Board') return 'MARK DEPARTED';
+        return 'NEXT STEP';
+      }
+
+      function renderSpotSelect(route) {
+        if (currentScreen === 'morning') return '';
+        const options = ['<option value="">No spot</option>']
+          .concat(currentSpots.map((spot) => `<option value="${escapeHtml(spot.id)}" ${spot.id === route.spotId ? 'selected' : ''}>${escapeHtml(spot.name)}</option>`))
+          .join('');
+        return `
+          <label class="spot-row">
+            <span>Parking Spot</span>
+            <select data-action="spot" data-id="${escapeHtml(route.id)}">${options}</select>
+          </label>
+        `;
+      }
+
+      function renderManualButtons(route) {
+        const buttons = STATUS_ORDER.map((status) => {
+          const active = route.status === status;
+          return `<button class="mini-btn ${active ? 'active' : ''}" data-action="status" data-id="${escapeHtml(route.id)}" data-status="${escapeHtml(status)}">${escapeHtml(status)}</button>`;
+        }).join('');
+        return `<div class="manual-buttons">${buttons}</div>`;
+      }
+
+      function renderRoutes(routes) {
+        const grid = document.getElementById('grid');
+        if (!routes.length) {
+          grid.innerHTML = '<div class="empty">No routes are set for this page.</div>';
+          return;
+        }
+
+        grid.innerHTML = routes.map((route) => {
+          const status = route.status || 'Waiting';
+          const statusClass = status.toLowerCase().replace(/\s+/g, '-');
+          return `
+            <article class="route-card ${statusClass}">
+              <div class="card-top">
+                <div class="bus-name">${escapeHtml(route.name)}</div>
+                <div class="status-pill">${escapeHtml(status)}</div>
+              </div>
+
+              ${renderSpotSelect(route)}
+
+              <div class="time-grid">
+                <div><span>Arrived</span><strong>${escapeHtml(formatTime(route.lastArrival))}</strong></div>
+                <div><span>Departed</span><strong>${escapeHtml(formatTime(route.lastDeparture))}</strong></div>
+              </div>
+
+              <button class="next-btn" data-action="next" data-id="${escapeHtml(route.id)}">${escapeHtml(nextButtonLabel(route))}</button>
+
+              <div class="correction-label">Correction</div>
+              ${renderManualButtons(route)}
+            </article>
+          `;
+        }).join('');
+      }
+
+      async function api(path, options = {}) {
+        const separator = path.includes('?') ? '&' : '?';
+        const response = await fetch(`${path}${separator}pin=${encodeURIComponent(officePin)}`, {
+          cache: 'no-store',
+          headers: { 'Content-Type': 'application/json', 'x-office-pin': officePin },
+          ...options,
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          const error = new Error(data.error || 'Something went wrong.');
+          error.status = response.status;
+          throw error;
+        }
+        return data;
+      }
+
+      async function loadOffice() {
+        if (!officePin) {
+          showPinBox();
+          return;
+        }
+
+        try {
+          const data = await api(`/api/office/${currentScreen}`);
+          hidePinBox();
+          currentSpots = data.spots || [];
+          renderRoutes(data.routes || []);
+          document.getElementById('updated').textContent = formatUpdated(data.updatedAt);
+        } catch (error) {
+          if (error.status === 401) {
+            officePin = '';
+            window.localStorage.removeItem('tbyOfficePin');
+            showPinBox();
+            showMessage('Invalid PIN. Please try again.', 'error');
+          } else {
+            showMessage(error.message, 'error');
+          }
+        }
+      }
+
+      async function handleNext(recordId, routeCard) {
+        if (busy) return;
+        busy = true;
+        const spotSelect = routeCard.querySelector('select[data-action="spot"]');
+        const spotId = spotSelect ? spotSelect.value : '';
+        try {
+          const data = await api(`/api/office/route/${recordId}/next`, {
+            method: 'POST',
+            body: JSON.stringify({ screen: currentScreen, spotId }),
+          });
+          showMessage(`Updated to ${data.to || data.status || 'next step'}.`, 'success');
+          await loadOffice();
+        } catch (error) {
+          showMessage(error.message, 'error');
+        } finally {
+          busy = false;
+        }
+      }
+
+      async function handleStatus(recordId, status, routeCard) {
+        if (busy) return;
+        busy = true;
+        const spotSelect = routeCard.querySelector('select[data-action="spot"]');
+        const spotId = spotSelect ? spotSelect.value : '';
+        try {
+          await api(`/api/office/route/${recordId}/status`, {
+            method: 'POST',
+            body: JSON.stringify({ screen: currentScreen, status, spotId, note: 'Manual office correction' }),
+          });
+          showMessage(`Changed to ${status}.`, 'success');
+          await loadOffice();
+        } catch (error) {
+          showMessage(error.message, 'error');
+        } finally {
+          busy = false;
+        }
+      }
+
+      async function handleSpot(recordId, spotId) {
+        if (busy) return;
+        busy = true;
+        try {
+          await api(`/api/office/route/${recordId}/spot`, {
+            method: 'POST',
+            body: JSON.stringify({ spotId }),
+          });
+          showMessage('Spot updated.', 'success');
+          await loadOffice();
+        } catch (error) {
+          showMessage(error.message, 'error');
+        } finally {
+          busy = false;
+        }
+      }
+
+      function escapeHtml(value) {
+        return String(value ?? '')
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#039;');
+      }
+
+      function connectInstantRefresh() {
+        if (!window.EventSource) return;
+        const source = new EventSource('/events');
+        source.onmessage = () => loadOffice();
+      }
+
+      document.getElementById('pin-form').addEventListener('submit', (event) => {
+        event.preventDefault();
+        officePin = document.getElementById('pin-input').value.trim();
+        window.localStorage.setItem('tbyOfficePin', officePin);
+        loadOffice();
+      });
+
+      document.getElementById('grid').addEventListener('click', (event) => {
+        const target = event.target.closest('button[data-action]');
+        if (!target) return;
+        const routeCard = target.closest('.route-card');
+        const recordId = target.dataset.id;
+        if (target.dataset.action === 'next') handleNext(recordId, routeCard);
+        if (target.dataset.action === 'status') handleStatus(recordId, target.dataset.status, routeCard);
+      });
+
+      document.getElementById('grid').addEventListener('change', (event) => {
+        const target = event.target.closest('select[data-action="spot"]');
+        if (!target) return;
+        handleSpot(target.dataset.id, target.value);
+      });
+
+      setTitle();
+      loadOffice();
+      connectInstantRefresh();
+      setInterval(loadOffice, 15000);
+    </script>
+  </body>
+</html>
