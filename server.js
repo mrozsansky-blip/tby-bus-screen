@@ -52,12 +52,7 @@ app.use(express.json({ limit: '1mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
 function clearCache() {
-  cache = {
-    recordsByScreen: {},
-    spotNameMap: null,
-    spotList: null,
-    spotNameMapFetchedAt: 0,
-  };
+  cache = { recordsByScreen: {}, spotNameMap: null, spotList: null, spotNameMapFetchedAt: 0 };
 }
 
 function notifyDisplays() {
@@ -66,9 +61,7 @@ function notifyDisplays() {
 }
 
 function assertAirtableReady() {
-  if (!AIRTABLE_TOKEN) {
-    throw new Error('Missing AIRTABLE_TOKEN environment variable in Render.');
-  }
+  if (!AIRTABLE_TOKEN) throw new Error('Missing AIRTABLE_TOKEN environment variable in Render.');
 }
 
 function airtableTableUrl(tableNameOrId) {
@@ -90,9 +83,7 @@ async function airtableRequest(url, options = {}) {
     const text = await response.text();
     throw new Error(`Airtable error ${response.status}: ${text}`);
   }
-
-  if (response.status === 204) return {};
-  return response.json();
+  return response.status === 204 ? {} : response.json();
 }
 
 function getOfficePin(req) {
@@ -100,8 +91,7 @@ function getOfficePin(req) {
 }
 
 function validateOfficePin(req, res) {
-  if (!OFFICE_PIN) return true;
-  if (getOfficePin(req) === OFFICE_PIN) return true;
+  if (!OFFICE_PIN || getOfficePin(req) === OFFICE_PIN) return true;
   res.status(401).json({ error: 'Invalid office PIN' });
   return false;
 }
@@ -183,11 +173,17 @@ function normalizeLinkedSpot(value, spotNameMap) {
   return '';
 }
 
+function getFirstAvailableField(fields, preferredName) {
+  if (fields[preferredName]) return fields[preferredName];
+  const values = Object.values(fields).filter((value) => typeof value === 'string' || typeof value === 'number');
+  return values.length ? String(values[0]) : '';
+}
+
 function normalizeRecord(record, spotNameMap) {
   const fields = record.fields || {};
   return {
     id: record.id,
-    name: fields[FIELD_NAMES.name] || 'Bus',
+    name: fields[FIELD_NAMES.name] || fields['Route Code'] || fields.Color || 'Bus',
     status: normalizeSingleSelect(fields[FIELD_NAMES.status]) || 'Waiting',
     spot: normalizeLinkedSpot(fields[FIELD_NAMES.spot], spotNameMap) || '',
     spotId: getLinkedRecordIds(fields[FIELD_NAMES.spot])[0] || '',
@@ -224,13 +220,10 @@ function formatForAirtableDateTime(date = new Date()) {
 
 async function fetchSpotNameMap(options = {}) {
   const now = Date.now();
-  if (!options.skipCache && cache.spotNameMap && cache.spotList && now - cache.spotNameMapFetchedAt < CACHE_SECONDS * 1000) {
-    return cache.spotNameMap;
-  }
+  if (!options.skipCache && cache.spotNameMap && cache.spotList && now - cache.spotNameMapFetchedAt < CACHE_SECONDS * 1000) return cache.spotNameMap;
 
   const params = new URLSearchParams();
   params.set('pageSize', '100');
-  params.append('fields[]', AIRTABLE_SPOT_NAME_FIELD);
 
   let url = `${airtableTableUrl(AIRTABLE_SPOTS_TABLE_NAME)}?${params.toString()}`;
   const spotNameMap = {};
@@ -239,7 +232,7 @@ async function fetchSpotNameMap(options = {}) {
   while (url) {
     const data = await airtableRequest(url);
     for (const record of data.records || []) {
-      const name = record.fields?.[AIRTABLE_SPOT_NAME_FIELD] || '';
+      const name = getFirstAvailableField(record.fields || {}, AIRTABLE_SPOT_NAME_FIELD) || record.id;
       spotNameMap[record.id] = name;
       spotList.push({ id: record.id, name });
     }
@@ -265,20 +258,6 @@ async function fetchRoutesForScreen(screen, options = {}) {
   const formula = buildFormula(resolvedScreen);
   const params = new URLSearchParams();
   params.set('pageSize', '100');
-  params.set('sort[0][field]', FIELD_NAMES.order);
-  params.set('sort[0][direction]', 'asc');
-  params.append('fields[]', FIELD_NAMES.name);
-  params.append('fields[]', FIELD_NAMES.status);
-  params.append('fields[]', FIELD_NAMES.spot);
-  params.append('fields[]', FIELD_NAMES.order);
-  params.append('fields[]', FIELD_NAMES.workflow);
-  params.append('fields[]', FIELD_NAMES.friday);
-  if (options.office) {
-    params.append('fields[]', FIELD_NAMES.lastArrival);
-    params.append('fields[]', FIELD_NAMES.lastDeparture);
-    params.append('fields[]', FIELD_NAMES.lastEvent);
-    params.append('fields[]', FIELD_NAMES.morningArrived);
-  }
   if (formula) params.set('filterByFormula', formula);
 
   let url = `${airtableTableUrl(AIRTABLE_TABLE_NAME)}?${params.toString()}`;
@@ -301,16 +280,7 @@ async function fetchRoutesForScreen(screen, options = {}) {
 }
 
 async function fetchRouteRecord(recordId) {
-  const params = new URLSearchParams();
-  params.append('fields[]', FIELD_NAMES.name);
-  params.append('fields[]', FIELD_NAMES.status);
-  params.append('fields[]', FIELD_NAMES.spot);
-  params.append('fields[]', FIELD_NAMES.workflow);
-  params.append('fields[]', FIELD_NAMES.lastArrival);
-  params.append('fields[]', FIELD_NAMES.lastDeparture);
-  params.append('fields[]', FIELD_NAMES.lastEvent);
-  params.append('fields[]', FIELD_NAMES.morningArrived);
-  return airtableRequest(`${airtableTableUrl(AIRTABLE_TABLE_NAME)}/${recordId}?${params.toString()}`);
+  return airtableRequest(`${airtableTableUrl(AIRTABLE_TABLE_NAME)}/${recordId}`);
 }
 
 async function updateRouteRecord(recordId, fields) {
@@ -322,7 +292,7 @@ async function updateRouteRecord(recordId, fields) {
   try {
     const data = await airtableRequest(airtableTableUrl(AIRTABLE_TABLE_NAME), {
       method: 'PATCH',
-      body: JSON.stringify({ records: [{ id: recordId, fields: cleanFields }] }),
+      body: JSON.stringify({ typecast: true, records: [{ id: recordId, fields: cleanFields }] }),
     });
     return data.records?.[0];
   } catch (error) {
@@ -346,7 +316,7 @@ async function createEventLog({ recordId, eventType, statusAfter, routeDirection
   try {
     await airtableRequest(airtableTableUrl(AIRTABLE_EVENT_LOG_TABLE_NAME), {
       method: 'POST',
-      body: JSON.stringify({ records: [{ fields }] }),
+      body: JSON.stringify({ typecast: true, records: [{ fields }] }),
     });
   } catch (error) {
     console.error('Could not create event log record. This will not stop the office button:', error.message);
@@ -386,11 +356,7 @@ function buildStatusUpdateFields({ targetStatus, now, spotId, isMorning }) {
 }
 
 app.get('/events', (req, res) => {
-  res.writeHead(200, {
-    'Content-Type': 'text/event-stream',
-    'Cache-Control': 'no-cache, no-transform',
-    Connection: 'keep-alive',
-  });
+  res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-transform', Connection: 'keep-alive' });
   res.write(': connected\n\n');
   sseClients.add(res);
   req.on('close', () => sseClients.delete(res));
