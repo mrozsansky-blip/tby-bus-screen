@@ -20,6 +20,7 @@ body {
   background: var(--bg);
   color: var(--ink);
   font-family: Arial, Helvetica, sans-serif;
+  overflow-x: hidden;
 }
 
 .office-shell { min-height: 100vh; }
@@ -86,12 +87,15 @@ h1 {
 
 .route-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(270px, 1fr));
   gap: 10px;
   padding: 10px;
+  width: 100%;
 }
 
 .route-card {
+  min-width: 0;
+  overflow: hidden;
   background: var(--card);
   border: 2px solid var(--border);
   border-radius: 12px;
@@ -111,9 +115,14 @@ h1 {
   align-items: flex-start;
   gap: 8px;
   margin-bottom: 8px;
+  min-width: 0;
 }
 
 .bus-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: clamp(21px, 2vw, 30px);
   line-height: 0.95;
   font-weight: 900;
@@ -121,6 +130,7 @@ h1 {
 }
 
 .status-pill {
+  flex: 0 0 auto;
   white-space: nowrap;
   border-radius: 999px;
   background: #e5e7eb;
@@ -137,7 +147,7 @@ h1 {
 
 .spot-row {
   display: grid;
-  grid-template-columns: 42px 1fr;
+  grid-template-columns: 42px minmax(0, 1fr);
   align-items: center;
   gap: 6px;
   margin-bottom: 7px;
@@ -153,6 +163,7 @@ h1 {
 
 select,
 input {
+  min-width: 0;
   width: 100%;
   border: 2px solid var(--border);
   border-radius: 9px;
@@ -170,6 +181,7 @@ input {
 }
 
 .time-grid div {
+  min-width: 0;
   border: 1px solid var(--border);
   border-radius: 9px;
   padding: 6px 7px;
@@ -198,11 +210,12 @@ button {
 
 .manual-buttons {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 5px;
 }
 
 .mini-btn {
+  min-width: 0;
   border: 2px solid var(--border);
   border-radius: 9px;
   padding: 9px 4px;
@@ -211,6 +224,9 @@ button {
   font-size: 11px;
   font-weight: 900;
   text-transform: uppercase;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .mini-btn.active {
@@ -260,11 +276,14 @@ button {
 
 .hidden { display: none; }
 
+@media (min-width: 1500px) {
+  .route-grid { grid-template-columns: repeat(6, minmax(270px, 1fr)); }
+}
+
 @media (max-width: 800px) {
   .office-header { flex-direction: column; align-items: flex-start; }
   .header-right { align-items: flex-start; width: 100%; }
   .tabs { justify-content: flex-start; }
   .route-grid { grid-template-columns: 1fr; padding: 8px; }
   .pin-box form { flex-direction: column; }
-  .manual-buttons { grid-template-columns: repeat(2, 1fr); }
 }
