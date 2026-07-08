@@ -1,0 +1,8 @@
+{
+  "crons": [
+    {
+      "path": "/api/cron/export-airtable",
+      "schedule": "30 23 * * *"
+    }
+  ]
+}
