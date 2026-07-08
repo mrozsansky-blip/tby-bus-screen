@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TBY Bus Setup</title>
+    <style>
+      * { box-sizing: border-box; }
+      body { margin: 0; font-family: Arial, Helvetica, sans-serif; background: #f3f4f6; color: #111827; }
+      main { max-width: 1100px; margin: 0 auto; padding: 20px; }
+      h1 { margin: 0 0 8px; }
+      p { color: #4b5563; }
+      label { display: block; font-weight: 800; margin: 14px 0 6px; }
+      input, textarea, button { font: inherit; }
+      input { width: 220px; padding: 10px; border: 1px solid #d1d5db; border-radius: 8px; }
+      textarea { width: 100%; min-height: 520px; padding: 12px; border: 1px solid #d1d5db; border-radius: 10px; font-family: Consolas, monospace; font-size: 13px; }
+      button { margin-top: 12px; border: 0; border-radius: 10px; background: #111827; color: white; padding: 10px 16px; font-weight: 800; cursor: pointer; }
+      .message { margin-top: 12px; padding: 12px; border-radius: 10px; background: white; border: 1px solid #d1d5db; white-space: pre-wrap; }
+      .links { display: flex; flex-wrap: wrap; gap: 10px; margin: 12px 0 18px; }
+      .links a { color: #2563eb; font-weight: 800; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>TBY Bus Setup</h1>
+      <p>Paste route and parking spot JSON here to load the live Turso database. This does not touch Airtable.</p>
+      <div class="links">
+        <a href="/current">Student screen</a>
+        <a href="/office/from-school">Office from-school</a>
+        <a href="/office/pri-dismissal">Office PRI</a>
+        <a href="/office/morning">Office morning</a>
+      </div>
+
+      <label for="pin">Office PIN</label>
+      <input id="pin" type="password" placeholder="PIN" />
+
+      <label for="json">Routes and spots JSON</label>
+      <textarea id="json"></textarea>
+      <button id="import">Import to Turso</button>
+      <button id="load" type="button">Load current data</button>
+      <section id="message" class="message"></section>
+    </main>
+
+    <script>
+      const sample = {
+        spots: [
+          { id: 'front-1', name: 'Front 1', sortOrder: 1 },
+          { id: 'front-2', name: 'Front 2', sortOrder: 2 },
+          { id: 'front-3', name: 'Front 3', sortOrder: 3 }
+        ],
+        routes: [
+          { id: 'blue', routeCode: 'Blue', displayName: 'Blue', workflowType: 'From School Dismissal', sortOrder: 1, active: true },
+          { id: 'red', routeCode: 'Red', displayName: 'Red', workflowType: 'From School Dismissal', sortOrder: 2, active: true },
+          { id: 'pri-1', routeCode: 'PRI 1', displayName: 'PRI 1', workflowType: 'PRI Dismissal', sortOrder: 1, active: true },
+          { id: 'am-blue', routeCode: 'AM Blue', displayName: 'AM Blue', workflowType: 'To School Arrival Only', useFriday: true, sortOrder: 1, active: true }
+        ]
+      };
+
+      const pin = document.getElementById('pin');
+      const json = document.getElementById('json');
+      const message = document.getElementById('message');
+      pin.value = localStorage.getItem('tbyOfficePin') || '';
+      json.value = JSON.stringify(sample, null, 2);
+
+      function show(text) { message.textContent = text; }
+
+      document.getElementById('import').addEventListener('click', async () => {
+        try {
+          localStorage.setItem('tbyOfficePin', pin.value.trim());
+          const payload = JSON.parse(json.value);
+          const response = await fetch('/api/admin/import?pin=' + encodeURIComponent(pin.value.trim()), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'x-office-pin': pin.value.trim() },
+            body: JSON.stringify(payload)
+          });
+          const data = await response.json();
+          if (!response.ok) throw new Error(data.error || 'Import failed');
+          show('Imported successfully:\n' + JSON.stringify(data, null, 2));
+        } catch (error) {
+          show('Error: ' + error.message);
+        }
+      });
+
+      document.getElementById('load').addEventListener('click', async () => {
+        try {
+          const response = await fetch('/api/admin/data?pin=' + encodeURIComponent(pin.value.trim()), {
+            headers: { 'x-office-pin': pin.value.trim() }
+          });
+          const data = await response.json();
+          if (!response.ok) throw new Error(data.error || 'Could not load current data');
+          json.value = JSON.stringify({ spots: data.spots, routes: data.routes }, null, 2);
+          show('Loaded current data.');
+        } catch (error) {
+          show('Error: ' + error.message);
+        }
+      });
+    </script>
+  </body>
+</html>
