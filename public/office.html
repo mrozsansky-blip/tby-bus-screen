@@ -227,7 +227,7 @@
         try {
           await api(`/api/office/route/${recordId}/spot`, {
             method: 'POST',
-            body: JSON.stringify({ spotId }),
+            body: JSON.stringify({ screen: currentScreen, spotId }),
           });
           showMessage('Spot updated.', 'success');
           await loadOffice(true);
