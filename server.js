@@ -9,6 +9,7 @@ const PORT = process.env.PORT || 3000;
 const TURSO_DATABASE_URL = process.env.TURSO_DATABASE_URL;
 const TURSO_AUTH_TOKEN = process.env.TURSO_AUTH_TOKEN;
 const OFFICE_PIN = process.env.OFFICE_PIN || '';
+const ADMIN_SECRET = process.env.ADMIN_SECRET || '';
 const SCHOOL_TIME_ZONE = process.env.SCHOOL_TIME_ZONE || 'America/New_York';
 const CRON_SECRET = process.env.CRON_SECRET || '';
 
@@ -25,6 +26,10 @@ const sseClients = new Set();
 
 app.use(express.json({ limit: '2mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
+
+function isProductionRuntime() {
+  return process.env.NODE_ENV === 'production' || process.env.VERCEL === '1';
+}
 
 function getDb() {
   if (!TURSO_DATABASE_URL || !TURSO_AUTH_TOKEN) {
@@ -121,19 +126,47 @@ async function createSchema() {
   }
 }
 
+function requireConfiguredSecret(secretValue, name, res) {
+  if (secretValue) return true;
+  if (!isProductionRuntime()) return true;
+  res.status(500).json({ error: `${name} is not configured.` });
+  return false;
+}
+
 function getOfficePin(req) {
-  return req.query.pin || req.headers['x-office-pin'] || req.body?.pin || '';
+  return req.headers['x-office-pin'] || req.body?.pin || '';
 }
 
 function validateOfficePin(req, res) {
-  if (!OFFICE_PIN || getOfficePin(req) === OFFICE_PIN) return true;
+  if (!requireConfiguredSecret(OFFICE_PIN, 'OFFICE_PIN', res)) return false;
+  if (!OFFICE_PIN && !isProductionRuntime()) return true;
+  if (getOfficePin(req) === OFFICE_PIN) return true;
   res.status(401).json({ error: 'Invalid office PIN' });
   return false;
 }
 
+function getAdminSecret(req) {
+  return req.headers['x-admin-secret'] || req.body?.adminSecret || '';
+}
+
+function validateAdminSecret(req, res) {
+  if (!requireConfiguredSecret(ADMIN_SECRET, 'ADMIN_SECRET', res)) return false;
+  if (!ADMIN_SECRET && !isProductionRuntime()) return true;
+  if (getAdminSecret(req) === ADMIN_SECRET) return true;
+  res.status(401).json({ error: 'Invalid admin secret' });
+  return false;
+}
+
+function getCronSecret(req) {
+  const auth = req.headers.authorization || '';
+  if (auth.toLowerCase().startsWith('bearer ')) return auth.slice(7).trim();
+  return req.headers['x-cron-secret'] || req.query.secret || '';
+}
+
 function validateCronSecret(req, res) {
-  const providedSecret = req.query.secret || req.headers['x-cron-secret'] || '';
-  if (!CRON_SECRET || providedSecret === CRON_SECRET) return true;
+  if (!requireConfiguredSecret(CRON_SECRET, 'CRON_SECRET', res)) return false;
+  if (!CRON_SECRET && !isProductionRuntime()) return true;
+  if (getCronSecret(req) === CRON_SECRET) return true;
   res.status(401).json({ error: 'Invalid cron secret' });
   return false;
 }
@@ -172,13 +205,10 @@ function getSchoolNowParts() {
 
 function chooseCurrentScreen() {
   const { weekday, hour, minute } = getSchoolNowParts();
-  const minutes = hour * 60 + minute;
-  const priDismissal = 14 * 60 + 30;
-  const regularDismissal = 15 * 60 + 30;
   if (weekday === 'Fri') return 'friday-dismissal';
-  if (minutes < priDismissal) return 'pri-dismissal';
-  if (minutes < regularDismissal) return 'pri-dismissal';
-  return 'from-school';
+  const minutes = hour * 60 + minute;
+  const regularDismissal = 15 * 60 + 30;
+  return minutes < regularDismissal ? 'pri-dismissal' : 'from-school';
 }
 
 function normalizeScreen(screen) {
@@ -213,6 +243,27 @@ function getNextStatus(currentStatus) {
 
 function dailyStatusId(serviceDate, screen, routeId) {
   return `${serviceDate}_${screen}_${routeId}`;
+}
+
+async function validateRouteForScreen(routeId, screen) {
+  const filter = screenFilter(screen);
+  const result = await run(
+    `SELECT * FROM routes WHERE id = ? AND active = 1 AND (${filter.sql}) LIMIT 1`,
+    [routeId, ...filter.args]
+  );
+  if (result.rows.length) return result.rows[0];
+
+  const anyRoute = await run(`SELECT id, active FROM routes WHERE id = ? LIMIT 1`, [routeId]);
+  if (!anyRoute.rows.length) throw new Error('Route does not exist.');
+  if (!anyRoute.rows[0].active) throw new Error('Route is inactive.');
+  throw new Error('Route is not valid for this screen.');
+}
+
+async function validateSpot(spotId) {
+  if (!spotId) return null;
+  const result = await run(`SELECT id FROM parking_spots WHERE id = ? AND active = 1 LIMIT 1`, [spotId]);
+  if (!result.rows.length) throw new Error('Parking spot does not exist or is inactive.');
+  return result.rows[0];
 }
 
 async function ensureDailyStatus(routeId, screen, serviceDate = toSchoolDateString()) {
@@ -308,7 +359,7 @@ async function fetchStatus(routeId, screen) {
 async function createEventLog({ routeId, screen, eventType, statusAfter, spotId, note, now = new Date() }) {
   await run(
     `INSERT INTO event_log (id, service_date, event_time, route_id, screen, event_type, status_after, parking_spot_id, note)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), ?)`,
     [randomUUID(), toSchoolDateString(now), now.toISOString(), routeId, screen, eventType, statusAfter || '', spotId || '', note || '']
   );
 }
@@ -316,6 +367,8 @@ async function createEventLog({ routeId, screen, eventType, statusAfter, spotId,
 async function setRouteStatus({ routeId, screen, status, spotId, note }) {
   if (!STATUS_VALUES.includes(status)) throw new Error('Invalid status');
   const resolvedScreen = normalizeScreen(screen);
+  await validateRouteForScreen(routeId, resolvedScreen);
+  await validateSpot(spotId || '');
   const current = await fetchStatus(routeId, resolvedScreen);
   if (!current) throw new Error('Route status not found.');
 
@@ -373,6 +426,8 @@ async function setRouteStatus({ routeId, screen, status, spotId, note }) {
 
 async function setRouteSpot(routeId, screen, spotId) {
   const resolvedScreen = normalizeScreen(screen || 'from-school');
+  await validateRouteForScreen(routeId, resolvedScreen);
+  await validateSpot(spotId || '');
   const now = new Date();
   await ensureDailyStatus(routeId, resolvedScreen, toSchoolDateString(now));
   await run(
@@ -585,7 +640,7 @@ app.get('/api/office/:screen', async (req, res) => {
 app.post('/api/office/route/:recordId/spot', async (req, res) => {
   if (!validateOfficePin(req, res)) return;
   try {
-    const screen = req.body?.screen || req.query.screen || 'from-school';
+    const screen = req.body?.screen || 'from-school';
     const result = await setRouteSpot(req.params.recordId, screen, req.body?.spotId || '');
     res.json(result);
   } catch (error) {
@@ -615,6 +670,7 @@ app.post('/api/office/route/:recordId/next', async (req, res) => {
   if (!validateOfficePin(req, res)) return;
   try {
     const screen = normalizeScreen(req.body?.screen || 'from-school');
+    await validateRouteForScreen(req.params.recordId, screen);
     const current = await fetchStatus(req.params.recordId, screen);
     const targetStatus = screen === 'morning' ? 'Arrived' : getNextStatus(current?.current_status || 'Waiting');
     const result = await setRouteStatus({
@@ -632,7 +688,7 @@ app.post('/api/office/route/:recordId/next', async (req, res) => {
 });
 
 app.post('/api/admin/import', async (req, res) => {
-  if (!validateOfficePin(req, res)) return;
+  if (!validateAdminSecret(req, res)) return;
   try {
     const result = await importData({ routes: req.body?.routes || [], spots: req.body?.spots || [] });
     notifyDisplays();
@@ -644,7 +700,7 @@ app.post('/api/admin/import', async (req, res) => {
 });
 
 app.get('/api/admin/data', async (req, res) => {
-  if (!validateOfficePin(req, res)) return;
+  if (!validateAdminSecret(req, res)) return;
   try {
     await ensureSchema();
     const routes = await run(`SELECT * FROM routes ORDER BY sort_order ASC, display_name COLLATE NOCASE ASC`);
@@ -657,7 +713,7 @@ app.get('/api/admin/data', async (req, res) => {
 });
 
 app.post('/api/admin/export-airtable', async (req, res) => {
-  if (!validateOfficePin(req, res)) return;
+  if (!validateAdminSecret(req, res)) return;
   try {
     res.json(await exportToAirtable());
   } catch (error) {
