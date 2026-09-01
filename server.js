@@ -898,19 +898,9 @@ app.get('/api/routes/:screen', async (req, res) => {
   }
 });
 
-app.get('/api/office/:screen', async (req, res) => {
-  if (!validateOfficePin(req, res)) return;
-  const screen = req.params.screen;
-  if (!['morning', 'current', 'from-school', 'pri-dismissal', 'friday-dismissal'].includes(screen)) return res.status(404).json({ error: 'Unknown office screen' });
-  try {
-    const result = await fetchRoutesForScreen(screen, { office: true });
-    res.json({ ...result, requestedScreen: screen, updatedAt: new Date().toISOString() });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
+// Registered before the /api/office/:screen wildcard below - Express matches routes in
+// registration order, and a wildcard segment (:screen) would otherwise swallow this literal path
+// (:screen = "screen-override") before it ever reached this handler.
 app.get('/api/office/screen-override', async (req, res) => {
   if (!validateOfficePin(req, res)) return;
   try {
@@ -930,6 +920,19 @@ app.post('/api/office/screen-override', async (req, res) => {
     const override = await setScreenOverride(req.body?.screen || 'auto');
     notifyDisplays();
     res.json({ override, scheduledScreen: computeScheduledScreen() });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/office/:screen', async (req, res) => {
+  if (!validateOfficePin(req, res)) return;
+  const screen = req.params.screen;
+  if (!['morning', 'current', 'from-school', 'pri-dismissal', 'friday-dismissal'].includes(screen)) return res.status(404).json({ error: 'Unknown office screen' });
+  try {
+    const result = await fetchRoutesForScreen(screen, { office: true });
+    res.json({ ...result, requestedScreen: screen, updatedAt: new Date().toISOString() });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: error.message });
