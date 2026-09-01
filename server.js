@@ -19,6 +19,11 @@ const AIRTABLE_EVENT_LOG_TABLE_NAME = process.env.AIRTABLE_EVENT_LOG_TABLE_NAME 
 const AIRTABLE_DAILY_STATUS_TABLE_NAME = process.env.AIRTABLE_DAILY_STATUS_TABLE_NAME || 'Bus Daily Status';
 const AIRTABLE_SCHOOL_YEARS_TABLE_NAME = process.env.AIRTABLE_SCHOOL_YEARS_TABLE_NAME || 'School Years';
 const AIRTABLE_BUS_ROUTES_TABLE_NAME = process.env.AIRTABLE_BUS_ROUTES_TABLE_NAME || 'Bus Routes';
+const AIRTABLE_STUDENTS_TABLE_NAME = process.env.AIRTABLE_STUDENTS_TABLE_NAME || 'Students';
+const AIRTABLE_FAMILIES_TABLE_NAME = process.env.AIRTABLE_FAMILIES_TABLE_NAME || 'Families';
+
+const TEXTING_SYSTEM_URL = (process.env.TEXTING_SYSTEM_URL || '').replace(/\/+$/, '');
+const TEXTING_MCP_AUTH_TOKEN = process.env.TEXTING_MCP_AUTH_TOKEN || '';
 
 const STATUS_VALUES = ['Waiting', 'Arrived', 'Loading', 'Ready to Board', 'Departed', 'Delayed', 'Cancelled'];
 
@@ -565,7 +570,7 @@ async function importData({ routes = [], spots = [] }) {
   return { ok: true, importedRoutes: routes.length, importedSpots: spots.length };
 }
 
-async function airtableListRecords(tableName, { fields } = {}) {
+async function airtableListRecords(tableName, { fields, filterByFormula } = {}) {
   if (!AIRTABLE_TOKEN || !AIRTABLE_BASE_ID) throw new Error('Missing AIRTABLE_TOKEN or AIRTABLE_BASE_ID environment variable.');
   const records = [];
   let offset;
@@ -573,6 +578,7 @@ async function airtableListRecords(tableName, { fields } = {}) {
     const url = new URL(`https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${encodeURIComponent(tableName)}`);
     url.searchParams.set('pageSize', '100');
     if (fields) fields.forEach((field) => url.searchParams.append('fields[]', field));
+    if (filterByFormula) url.searchParams.set('filterByFormula', filterByFormula);
     if (offset) url.searchParams.set('offset', offset);
     const response = await fetch(url, { headers: { Authorization: `Bearer ${AIRTABLE_TOKEN}` } });
     if (!response.ok) throw new Error(`Airtable fetch of "${tableName}" failed ${response.status}: ${await response.text()}`);
@@ -581,6 +587,30 @@ async function airtableListRecords(tableName, { fields } = {}) {
     offset = data.offset;
   } while (offset);
   return records;
+}
+
+async function airtableGetRecord(tableName, recordId, fields) {
+  if (!AIRTABLE_TOKEN || !AIRTABLE_BASE_ID) throw new Error('Missing AIRTABLE_TOKEN or AIRTABLE_BASE_ID environment variable.');
+  const url = new URL(`https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${encodeURIComponent(tableName)}/${encodeURIComponent(recordId)}`);
+  if (fields) fields.forEach((field) => url.searchParams.append('fields[]', field));
+  const response = await fetch(url, { headers: { Authorization: `Bearer ${AIRTABLE_TOKEN}` } });
+  if (!response.ok) throw new Error(`Airtable fetch of "${tableName}/${recordId}" failed ${response.status}: ${await response.text()}`);
+  return response.json();
+}
+
+// Fetches specific records by id via filterByFormula (Airtable's REST API has no bulk-get-by-id
+// endpoint). Chunked because filterByFormula has a practical URL-length limit.
+async function airtableListRecordsByIds(tableName, ids, fields) {
+  const unique = [...new Set(ids)].filter(Boolean);
+  if (!unique.length) return [];
+  const chunks = [];
+  for (let i = 0; i < unique.length; i += 40) chunks.push(unique.slice(i, i + 40));
+  const all = [];
+  for (const chunk of chunks) {
+    const formula = `OR(${chunk.map((id) => `RECORD_ID()='${id}'`).join(',')})`;
+    all.push(...(await airtableListRecords(tableName, { fields, filterByFormula: formula })));
+  }
+  return all;
 }
 
 async function findCurrentSchoolYearRecordId() {
@@ -670,6 +700,82 @@ async function syncRoutesFromAirtable() {
   }
 
   return { ok: true, importedRoutes: result.importedRoutes, flagged };
+}
+
+function normalizeUsPhone(value) {
+  const digits = String(value || '').replace(/\D/g, '');
+  if (digits.length === 11 && digits.startsWith('1')) return digits.slice(1);
+  if (digits.length === 10) return digits;
+  return '';
+}
+
+// Resolves who to text for a route's departure: Bus Routes record -> linked Students (via the
+// AM Students / PM Students reverse-link field matching the route's own AM/PM value) -> each
+// student's Family -> Father Cell / Mother Cell, skipping families with "Do Not Text" checked.
+// Not using the separate "Dismissal Students" reverse link - that's a different assignment type
+// on Student Transportation and its overlap with PM Students isn't established; if PM Students
+// turns out to be the wrong field for "who rides this bus home," this is the place to change it.
+async function resolveBusDepartureRecipients(routeId) {
+  const routeRow = await run(`SELECT airtable_record_id, display_name, route_code FROM routes WHERE id = ?`, [routeId]);
+  const route = routeRow.rows[0];
+  if (!route) throw new Error('Route not found.');
+  if (!route.airtable_record_id) throw new Error('This route has no linked Airtable Bus Routes record (sync it from Airtable first).');
+
+  const busRecord = await airtableGetRecord(AIRTABLE_BUS_ROUTES_TABLE_NAME, route.airtable_record_id, ['AM / PM', 'AM Students', 'PM Students']);
+  const ampm = busRecord.fields?.['AM / PM'] || '';
+  const studentIds = ampm === 'AM' ? busRecord.fields?.['AM Students'] || [] : busRecord.fields?.['PM Students'] || [];
+  const displayName = route.display_name || route.route_code || 'Bus';
+  if (!studentIds.length) return { displayName, recipients: [] };
+
+  const students = await airtableListRecordsByIds(AIRTABLE_STUDENTS_TABLE_NAME, studentIds, ['Family']);
+  const familyIds = [...new Set(students.flatMap((student) => student.fields?.Family || []))];
+  if (!familyIds.length) return { displayName, recipients: [] };
+
+  const families = await airtableListRecordsByIds(AIRTABLE_FAMILIES_TABLE_NAME, familyIds, ['Father Cell', 'Mother Cell', 'Do Not Text']);
+  const seen = new Set();
+  const recipients = [];
+  for (const family of families) {
+    if (family.fields?.['Do Not Text']) continue;
+    for (const raw of [family.fields?.['Father Cell'], family.fields?.['Mother Cell']]) {
+      const phone = normalizeUsPhone(raw);
+      if (!phone || seen.has(phone)) continue;
+      seen.add(phone);
+      recipients.push({ normalizedPhoneNumber: phone, anonymousReference: family.id });
+    }
+  }
+  return { displayName, recipients };
+}
+
+function busDepartureMessage(displayName) {
+  return `The ${displayName} bus has left. — Tiferes Bais Yaakov`;
+}
+
+async function textgridMcpCall(name, args) {
+  if (!TEXTING_SYSTEM_URL || !TEXTING_MCP_AUTH_TOKEN) throw new Error('Texting is not configured (missing TEXTING_SYSTEM_URL or TEXTING_MCP_AUTH_TOKEN).');
+  const response = await fetch(`${TEXTING_SYSTEM_URL}/api/mcp`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TEXTING_MCP_AUTH_TOKEN}` },
+    body: JSON.stringify({ jsonrpc: '2.0', id: randomUUID(), method: 'tools/call', params: { name, arguments: args } }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || data.error) throw new Error(data.error?.message || `Texting system request failed (${response.status}).`);
+  return data.result?.structuredContent;
+}
+
+async function previewBusDeparture(routeId) {
+  const { displayName, recipients } = await resolveBusDepartureRecipients(routeId);
+  if (!recipients.length) return { message: busDepartureMessage(displayName), count: 0, confirmationToken: null, expiresInSeconds: 0, sandbox: null };
+  const message = busDepartureMessage(displayName);
+  const result = await textgridMcpCall('preview_sms_send', { message, recipients });
+  return { message, count: result.uniqueValidRecipients, confirmationToken: result.confirmationToken, expiresInSeconds: result.expiresInSeconds, sandbox: result.sandboxMode };
+}
+
+async function sendBusDeparture(routeId, message, confirmationToken) {
+  const { recipients } = await resolveBusDepartureRecipients(routeId);
+  if (!recipients.length) throw new Error('No recipients to text for this route.');
+  if (!confirmationToken) throw new Error('Missing confirmationToken from the preview step.');
+  const result = await textgridMcpCall('send_sms', { message, recipients, confirmationToken });
+  return { texted: result.successful?.length || 0, failed: result.failed?.length || 0, sandbox: result.sandboxMode };
 }
 
 async function airtableCreateRecords(tableName, records) {
@@ -869,6 +975,26 @@ app.post('/api/office/route/:recordId/next', async (req, res) => {
       note: req.body?.note || '',
     });
     res.json({ ...result, from: current?.current_status || 'Waiting', to: targetStatus });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/office/route/:recordId/notify-departure/preview', async (req, res) => {
+  if (!validateOfficePin(req, res)) return;
+  try {
+    res.json(await previewBusDeparture(req.params.recordId));
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/office/route/:recordId/notify-departure/send', async (req, res) => {
+  if (!validateOfficePin(req, res)) return;
+  try {
+    res.json(await sendBusDeparture(req.params.recordId, req.body?.message || '', req.body?.confirmationToken || ''));
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: error.message });

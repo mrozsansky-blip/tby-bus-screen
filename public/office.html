@@ -132,6 +132,11 @@
         return `<div class="manual-buttons compact-buttons">${buttons}</div>`;
       }
 
+      function renderNotifyButton(route) {
+        if (currentScreen === 'morning') return '';
+        return `<button class="mini-btn notify-btn" data-action="notify" data-id="${escapeHtml(route.id)}" data-name="${escapeHtml(route.name)}">Text Parents: Bus Left</button>`;
+      }
+
       function renderRoutes(routes) {
         const grid = document.getElementById('grid');
         if (!routes.length) {
@@ -157,6 +162,7 @@
               </div>
 
               ${renderStatusButtons(route)}
+              ${renderNotifyButton(route)}
             </article>
           `;
         }).join('');
@@ -291,6 +297,36 @@
         }
       }
 
+      async function handleNotify(recordId, routeName) {
+        if (busy) return;
+        busy = true;
+        try {
+          const preview = await api(`/api/office/route/${recordId}/notify-departure/preview`, { method: 'POST', body: JSON.stringify({}) });
+          if (!preview.count) {
+            showMessage(`No text-able parent numbers found for ${routeName}.`, 'error');
+            return;
+          }
+          const confirmed = window.confirm(
+            `Text ${preview.count} parent(s) on the ${routeName} bus?\n\n"${preview.message}"` +
+            (preview.sandbox ? '\n\n(Sandbox mode: no real texts will be sent.)' : '')
+          );
+          if (!confirmed) return;
+          const result = await api(`/api/office/route/${recordId}/notify-departure/send`, {
+            method: 'POST',
+            body: JSON.stringify({ message: preview.message, confirmationToken: preview.confirmationToken }),
+          });
+          if (result.sandbox) {
+            showMessage(`Sandbox mode: would have texted ${result.texted} parent(s). No real texts were sent.`, 'info');
+          } else {
+            showMessage(`Texted ${result.texted} parent(s)${result.failed ? `, ${result.failed} failed` : ''}.`, 'success');
+          }
+        } catch (error) {
+          showMessage(error.message, 'error');
+        } finally {
+          busy = false;
+        }
+      }
+
       function escapeHtml(value) {
         return String(value ?? '')
           .replace(/&/g, '&amp;')
@@ -315,10 +351,16 @@
       });
 
       document.getElementById('grid').addEventListener('click', (event) => {
-        const target = event.target.closest('button[data-action="status"]');
-        if (!target) return;
-        const routeCard = target.closest('.route-card');
-        handleStatus(target.dataset.id, target.dataset.status, routeCard);
+        const statusTarget = event.target.closest('button[data-action="status"]');
+        if (statusTarget) {
+          const routeCard = statusTarget.closest('.route-card');
+          handleStatus(statusTarget.dataset.id, statusTarget.dataset.status, routeCard);
+          return;
+        }
+        const notifyTarget = event.target.closest('button[data-action="notify"]');
+        if (notifyTarget) {
+          handleNotify(notifyTarget.dataset.id, notifyTarget.dataset.name);
+        }
       });
 
       document.getElementById('grid').addEventListener('change', (event) => {
