@@ -729,11 +729,12 @@ async function resolveBusDepartureRecipients(routeId) {
   const ampm = busRecord.fields?.['AM / PM'] || '';
   const transportationIds = ampm === 'AM' ? busRecord.fields?.['AM Students'] || [] : busRecord.fields?.['PM Students'] || [];
   const displayName = route.display_name || route.route_code || 'Bus';
-  if (!transportationIds.length) return { displayName, recipients: [] };
+  const routeCode = route.route_code || '';
+  if (!transportationIds.length) return { displayName, routeCode, recipients: [] };
 
   const transportationRows = await airtableListRecordsByIds(AIRTABLE_STUDENT_TRANSPORTATION_TABLE_NAME, transportationIds, ['Family']);
   const familyIds = [...new Set(transportationRows.flatMap((row) => row.fields?.Family || []))];
-  if (!familyIds.length) return { displayName, recipients: [] };
+  if (!familyIds.length) return { displayName, routeCode, recipients: [] };
 
   const families = await airtableListRecordsByIds(AIRTABLE_FAMILIES_TABLE_NAME, familyIds, ['Father Cell', 'Mother Cell', 'Do Not Text']);
   const seen = new Set();
@@ -747,7 +748,7 @@ async function resolveBusDepartureRecipients(routeId) {
       recipients.push({ normalizedPhoneNumber: phone, anonymousReference: family.id });
     }
   }
-  return { displayName, recipients };
+  return { displayName, routeCode, recipients };
 }
 
 function busDepartureMessage(displayName) {
@@ -767,11 +768,11 @@ async function textgridMcpCall(name, args) {
 }
 
 async function previewBusDeparture(routeId) {
-  const { displayName, recipients } = await resolveBusDepartureRecipients(routeId);
-  if (!recipients.length) return { message: busDepartureMessage(displayName), count: 0, confirmationToken: null, expiresInSeconds: 0, sandbox: null };
+  const { displayName, routeCode, recipients } = await resolveBusDepartureRecipients(routeId);
+  if (!recipients.length) return { message: busDepartureMessage(displayName), routeCode, count: 0, confirmationToken: null, expiresInSeconds: 0, sandbox: null };
   const message = busDepartureMessage(displayName);
   const result = await textgridMcpCall('preview_sms_send', { message, recipients });
-  return { message, count: result.uniqueValidRecipients, confirmationToken: result.confirmationToken, expiresInSeconds: result.expiresInSeconds, sandbox: result.sandboxMode };
+  return { message, routeCode, count: result.uniqueValidRecipients, confirmationToken: result.confirmationToken, expiresInSeconds: result.expiresInSeconds, sandbox: result.sandboxMode };
 }
 
 async function sendBusDeparture(routeId, message, confirmationToken) {
@@ -897,19 +898,9 @@ app.get('/api/routes/:screen', async (req, res) => {
   }
 });
 
-app.get('/api/office/:screen', async (req, res) => {
-  if (!validateOfficePin(req, res)) return;
-  const screen = req.params.screen;
-  if (!['morning', 'current', 'from-school', 'pri-dismissal', 'friday-dismissal'].includes(screen)) return res.status(404).json({ error: 'Unknown office screen' });
-  try {
-    const result = await fetchRoutesForScreen(screen, { office: true });
-    res.json({ ...result, requestedScreen: screen, updatedAt: new Date().toISOString() });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
+// Registered before the /api/office/:screen wildcard below - Express matches routes in
+// registration order, and a wildcard segment (:screen) would otherwise swallow this literal path
+// (:screen = "screen-override") before it ever reached this handler.
 app.get('/api/office/screen-override', async (req, res) => {
   if (!validateOfficePin(req, res)) return;
   try {
@@ -929,6 +920,19 @@ app.post('/api/office/screen-override', async (req, res) => {
     const override = await setScreenOverride(req.body?.screen || 'auto');
     notifyDisplays();
     res.json({ override, scheduledScreen: computeScheduledScreen() });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/office/:screen', async (req, res) => {
+  if (!validateOfficePin(req, res)) return;
+  const screen = req.params.screen;
+  if (!['morning', 'current', 'from-school', 'pri-dismissal', 'friday-dismissal'].includes(screen)) return res.status(404).json({ error: 'Unknown office screen' });
+  try {
+    const result = await fetchRoutesForScreen(screen, { office: true });
+    res.json({ ...result, requestedScreen: screen, updatedAt: new Date().toISOString() });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: error.message });
