@@ -232,7 +232,7 @@ function screenFilter(screen) {
   if (screen === 'morning') return { sql: "workflow_type = ?", args: ['To School Arrival Only'] };
   if (screen === 'from-school') return { sql: "workflow_type = ?", args: ['From School Dismissal'] };
   if (screen === 'pri-dismissal') return { sql: "workflow_type = ?", args: ['PRI Dismissal'] };
-  if (screen === 'friday-dismissal') return { sql: "use_friday = 1 OR workflow_type = ?", args: ['Friday Dismissal'] };
+  if (screen === 'friday-dismissal') return { sql: "use_friday = 1 OR workflow_type = ? OR workflow_type = ?", args: ['Friday Dismissal', 'To School Arrival Only'] };
   return { sql: "1 = 0", args: [] };
 }
 
