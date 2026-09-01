@@ -238,6 +238,35 @@ button {
 .mini-btn:active,
 .pin-box button:active { transform: translateY(1px); }
 
+.override-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 10px 10px 0;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: var(--card);
+  border: 2px solid var(--border);
+}
+
+.override-label {
+  font-size: 12px;
+  font-weight: 900;
+  color: var(--muted);
+}
+
+.override-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.override-buttons .mini-btn {
+  padding: 7px 10px;
+}
+
 .message {
   margin: 10px 10px 0;
   padding: 10px 12px;

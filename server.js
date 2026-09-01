@@ -117,6 +117,11 @@ async function createSchema() {
       FOREIGN KEY(route_id) REFERENCES routes(id),
       FOREIGN KEY(parking_spot_id) REFERENCES parking_spots(id)
     )`,
+    `CREATE TABLE IF NOT EXISTS settings (
+      key TEXT PRIMARY KEY,
+      value TEXT,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`,
     `CREATE INDEX IF NOT EXISTS idx_routes_screen ON routes(workflow_type, use_friday, active, sort_order)`,
     `CREATE INDEX IF NOT EXISTS idx_daily_status_lookup ON daily_status(service_date, screen, route_id)`,
     `CREATE INDEX IF NOT EXISTS idx_event_log_export ON event_log(exported_at, service_date)`,
@@ -205,7 +210,50 @@ function getSchoolNowParts() {
   return { weekday: value('weekday'), hour: Number(value('hour')), minute: Number(value('minute')) };
 }
 
-function chooseCurrentScreen() {
+const OVERRIDABLE_SCREENS = ['from-school', 'pri-dismissal', 'friday-dismissal'];
+const CURRENT_SCREEN_OVERRIDE_KEY = 'current_screen_override';
+
+async function getSetting(key) {
+  const result = await run(`SELECT value FROM settings WHERE key = ?`, [key]);
+  return result.rows[0]?.value ?? null;
+}
+
+async function setSetting(key, value) {
+  await run(
+    `INSERT INTO settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP`,
+    [key, value]
+  );
+}
+
+// The office can force /current to a specific screen for the rest of the school day (schedule
+// changes, early dismissal, etc). The override is stamped with the school-date it was set on, so
+// it stops applying on its own once that date has passed - no separate cleanup job needed.
+async function getScreenOverride() {
+  const raw = await getSetting(CURRENT_SCREEN_OVERRIDE_KEY);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed.serviceDate === toSchoolDateString() && OVERRIDABLE_SCREENS.includes(parsed.screen)) {
+      return parsed.screen;
+    }
+  } catch (error) {
+    // malformed/legacy value - treat as no override
+  }
+  return null;
+}
+
+async function setScreenOverride(screen) {
+  if (!screen || screen === 'auto') {
+    await setSetting(CURRENT_SCREEN_OVERRIDE_KEY, '');
+    return null;
+  }
+  if (!OVERRIDABLE_SCREENS.includes(screen)) throw new Error('Invalid screen override.');
+  await setSetting(CURRENT_SCREEN_OVERRIDE_KEY, JSON.stringify({ screen, serviceDate: toSchoolDateString() }));
+  return screen;
+}
+
+function computeScheduledScreen() {
   const { weekday, hour, minute } = getSchoolNowParts();
   if (weekday === 'Fri') return 'friday-dismissal';
   const minutes = hour * 60 + minute;
@@ -213,8 +261,14 @@ function chooseCurrentScreen() {
   return minutes < regularDismissal ? 'pri-dismissal' : 'from-school';
 }
 
-function normalizeScreen(screen) {
-  return screen === 'current' ? chooseCurrentScreen() : screen;
+async function chooseCurrentScreen() {
+  await ensureSchema();
+  const override = await getScreenOverride();
+  return override || computeScheduledScreen();
+}
+
+async function normalizeScreen(screen) {
+  return screen === 'current' ? await chooseCurrentScreen() : screen;
 }
 
 function toSchoolDateString(date = new Date()) {
@@ -232,7 +286,7 @@ function screenFilter(screen) {
   if (screen === 'morning') return { sql: "workflow_type = ?", args: ['To School Arrival Only'] };
   if (screen === 'from-school') return { sql: "workflow_type = ?", args: ['From School Dismissal'] };
   if (screen === 'pri-dismissal') return { sql: "workflow_type = ?", args: ['PRI Dismissal'] };
-  if (screen === 'friday-dismissal') return { sql: "use_friday = 1 OR workflow_type = ?", args: ['Friday Dismissal'] };
+  if (screen === 'friday-dismissal') return { sql: "use_friday = 1 OR workflow_type = ? OR workflow_type = ?", args: ['Friday Dismissal', 'To School Arrival Only'] };
   return { sql: "1 = 0", args: [] };
 }
 
@@ -303,7 +357,7 @@ async function listSpots() {
 
 async function fetchRoutesForScreen(screen, options = {}) {
   await ensureSchema();
-  const resolvedScreen = normalizeScreen(screen);
+  const resolvedScreen = await normalizeScreen(screen);
   const serviceDate = toSchoolDateString();
   const filter = screenFilter(resolvedScreen);
 
@@ -368,7 +422,7 @@ async function createEventLog({ routeId, screen, eventType, statusAfter, spotId,
 
 async function setRouteStatus({ routeId, screen, status, spotId, note }) {
   if (!STATUS_VALUES.includes(status)) throw new Error('Invalid status');
-  const resolvedScreen = normalizeScreen(screen);
+  const resolvedScreen = await normalizeScreen(screen);
   await validateRouteForScreen(routeId, resolvedScreen);
   await validateSpot(spotId || '');
   const current = await fetchStatus(routeId, resolvedScreen);
@@ -427,7 +481,7 @@ async function setRouteStatus({ routeId, screen, status, spotId, note }) {
 }
 
 async function setRouteSpot(routeId, screen, spotId) {
-  const resolvedScreen = normalizeScreen(screen || 'from-school');
+  const resolvedScreen = await normalizeScreen(screen || 'from-school');
   await validateRouteForScreen(routeId, resolvedScreen);
   await validateSpot(spotId || '');
   const now = new Date();
@@ -746,6 +800,31 @@ app.get('/api/office/:screen', async (req, res) => {
   }
 });
 
+app.get('/api/office/screen-override', async (req, res) => {
+  if (!validateOfficePin(req, res)) return;
+  try {
+    await ensureSchema();
+    const override = await getScreenOverride();
+    res.json({ override, scheduledScreen: computeScheduledScreen() });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/office/screen-override', async (req, res) => {
+  if (!validateOfficePin(req, res)) return;
+  try {
+    await ensureSchema();
+    const override = await setScreenOverride(req.body?.screen || 'auto');
+    notifyDisplays();
+    res.json({ override, scheduledScreen: computeScheduledScreen() });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.post('/api/office/route/:recordId/spot', async (req, res) => {
   if (!validateOfficePin(req, res)) return;
   try {
@@ -778,7 +857,7 @@ app.post('/api/office/route/:recordId/status', async (req, res) => {
 app.post('/api/office/route/:recordId/next', async (req, res) => {
   if (!validateOfficePin(req, res)) return;
   try {
-    const screen = normalizeScreen(req.body?.screen || 'from-school');
+    const screen = await normalizeScreen(req.body?.screen || 'from-school');
     await validateRouteForScreen(req.params.recordId, screen);
     const current = await fetchStatus(req.params.recordId, screen);
     const targetStatus = screen === 'morning' ? 'Arrived' : getNextStatus(current?.current_status || 'Waiting');
