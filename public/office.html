@@ -33,6 +33,16 @@
         </form>
       </section>
 
+      <section id="override-bar" class="override-bar hidden">
+        <span id="override-label" class="override-label">Public screen: Auto</span>
+        <div class="override-buttons">
+          <button class="mini-btn" data-override="auto">Auto</button>
+          <button class="mini-btn" data-override="from-school">From School</button>
+          <button class="mini-btn" data-override="pri-dismissal">PRI</button>
+          <button class="mini-btn" data-override="friday-dismissal">Friday</button>
+        </div>
+      </section>
+
       <section id="message" class="message hidden"></section>
       <section id="grid" class="route-grid compact"></section>
     </main>
@@ -80,11 +90,13 @@
 
       function showPinBox() {
         document.getElementById('pin-box').classList.remove('hidden');
+        document.getElementById('override-bar').classList.add('hidden');
         document.getElementById('grid').innerHTML = '';
       }
 
       function hidePinBox() {
         document.getElementById('pin-box').classList.add('hidden');
+        document.getElementById('override-bar').classList.remove('hidden');
       }
 
       function formatTime(value) {
@@ -221,6 +233,47 @@
         }
       }
 
+      async function loadOverride() {
+        if (!officePin) return;
+        try {
+          const data = await api('/api/office/screen-override');
+          renderOverride(data);
+        } catch (error) {
+          if (error.status !== 401) showMessage(error.message, 'error');
+        }
+      }
+
+      function renderOverride(data) {
+        const bar = document.getElementById('override-bar');
+        const label = document.getElementById('override-label');
+        const active = data.override || 'auto';
+        bar.querySelectorAll('button[data-override]').forEach((button) => {
+          button.classList.toggle('active', button.dataset.override === active);
+        });
+        if (data.override) {
+          label.textContent = `Public screen: OVERRIDDEN to ${SCREEN_TITLES[data.override] || data.override} (until midnight)`;
+        } else {
+          label.textContent = `Public screen: Auto (currently ${SCREEN_TITLES[data.scheduledScreen] || data.scheduledScreen})`;
+        }
+      }
+
+      async function setOverride(screen) {
+        if (busy) return;
+        busy = true;
+        try {
+          const data = await api('/api/office/screen-override', {
+            method: 'POST',
+            body: JSON.stringify({ screen }),
+          });
+          renderOverride(data);
+          showMessage(screen === 'auto' ? 'Public screen back to Auto.' : `Public screen overridden to ${SCREEN_TITLES[screen] || screen}.`, 'success');
+        } catch (error) {
+          showMessage(error.message, 'error');
+        } finally {
+          busy = false;
+        }
+      }
+
       async function handleSpot(recordId, spotId) {
         if (busy) return;
         busy = true;
@@ -252,6 +305,13 @@
         officePin = document.getElementById('pin-input').value.trim();
         window.localStorage.setItem('tbyOfficePin', officePin);
         loadOffice(true);
+        loadOverride();
+      });
+
+      document.getElementById('override-bar').addEventListener('click', (event) => {
+        const target = event.target.closest('button[data-override]');
+        if (!target) return;
+        setOverride(target.dataset.override);
       });
 
       document.getElementById('grid').addEventListener('click', (event) => {
@@ -274,7 +334,8 @@
 
       setTitle();
       loadOffice(true);
-      loadTimer = setInterval(() => loadOffice(false), 30000);
+      loadOverride();
+      loadTimer = setInterval(() => { loadOffice(false); loadOverride(); }, 30000);
     </script>
   </body>
 </html>
