@@ -14,10 +14,12 @@
       input, textarea, button { font: inherit; }
       input { width: 220px; padding: 10px; border: 1px solid #d1d5db; border-radius: 8px; }
       textarea { width: 100%; min-height: 520px; padding: 12px; border: 1px solid #d1d5db; border-radius: 10px; font-family: Consolas, monospace; font-size: 13px; }
-      button { margin-top: 12px; border: 0; border-radius: 10px; background: #111827; color: white; padding: 10px 16px; font-weight: 800; cursor: pointer; }
+      button { margin-top: 12px; margin-right: 10px; border: 0; border-radius: 10px; background: #111827; color: white; padding: 10px 16px; font-weight: 800; cursor: pointer; }
+      button.secondary { background: #2563eb; }
       .message { margin-top: 12px; padding: 12px; border-radius: 10px; background: white; border: 1px solid #d1d5db; white-space: pre-wrap; }
       .links { display: flex; flex-wrap: wrap; gap: 10px; margin: 12px 0 18px; }
       .links a { color: #2563eb; font-weight: 800; }
+      .sync-row { display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap; margin-top: 24px; padding-top: 20px; border-top: 1px solid #d1d5db; }
     </style>
   </head>
   <body>
@@ -31,8 +33,15 @@
         <a href="/office/morning">Office morning</a>
       </div>
 
-      <label for="pin">Office PIN</label>
-      <input id="pin" type="password" placeholder="PIN" />
+      <label for="secret">Admin secret</label>
+      <input id="secret" type="password" placeholder="ADMIN_SECRET" />
+
+      <div class="sync-row">
+        <div>
+          <label for="sync" style="margin:0;">Bus Routes (Airtable)</label>
+          <button id="sync" class="secondary" type="button">Sync routes from Airtable</button>
+        </div>
+      </div>
 
       <label for="json">Routes and spots JSON</label>
       <textarea id="json"></textarea>
@@ -56,21 +65,25 @@
         ]
       };
 
-      const pin = document.getElementById('pin');
+      const secret = document.getElementById('secret');
       const json = document.getElementById('json');
       const message = document.getElementById('message');
-      pin.value = localStorage.getItem('tbyOfficePin') || '';
+      secret.value = localStorage.getItem('tbyAdminSecret') || '';
       json.value = JSON.stringify(sample, null, 2);
 
       function show(text) { message.textContent = text; }
 
+      function adminHeaders() {
+        localStorage.setItem('tbyAdminSecret', secret.value.trim());
+        return { 'Content-Type': 'application/json', 'x-admin-secret': secret.value.trim() };
+      }
+
       document.getElementById('import').addEventListener('click', async () => {
         try {
-          localStorage.setItem('tbyOfficePin', pin.value.trim());
           const payload = JSON.parse(json.value);
-          const response = await fetch('/api/admin/import?pin=' + encodeURIComponent(pin.value.trim()), {
+          const response = await fetch('/api/admin/import', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'x-office-pin': pin.value.trim() },
+            headers: adminHeaders(),
             body: JSON.stringify(payload)
           });
           const data = await response.json();
@@ -83,13 +96,31 @@
 
       document.getElementById('load').addEventListener('click', async () => {
         try {
-          const response = await fetch('/api/admin/data?pin=' + encodeURIComponent(pin.value.trim()), {
-            headers: { 'x-office-pin': pin.value.trim() }
-          });
+          const response = await fetch('/api/admin/data', { headers: adminHeaders() });
           const data = await response.json();
           if (!response.ok) throw new Error(data.error || 'Could not load current data');
           json.value = JSON.stringify({ spots: data.spots, routes: data.routes }, null, 2);
           show('Loaded current data.');
+        } catch (error) {
+          show('Error: ' + error.message);
+        }
+      });
+
+      document.getElementById('sync').addEventListener('click', async () => {
+        try {
+          show('Syncing from Airtable...');
+          const response = await fetch('/api/admin/sync-airtable-routes', {
+            method: 'POST',
+            headers: adminHeaders()
+          });
+          const data = await response.json();
+          if (!response.ok) throw new Error(data.error || 'Sync failed');
+          let text = `Synced ${data.importedRoutes} route(s) from Airtable.`;
+          if (data.flagged && data.flagged.length) {
+            text += `\n\n${data.flagged.length} route(s) imported INACTIVE and need a manual look (unclear AM/PM or dismissal type):\n`;
+            text += data.flagged.map((f) => `- ${f.routeCode} (AM/PM: ${f.ampm || '(blank)'}, Primary Dismissal: ${f.dismissal || '(blank)'})`).join('\n');
+          }
+          show(text);
         } catch (error) {
           show('Error: ' + error.message);
         }

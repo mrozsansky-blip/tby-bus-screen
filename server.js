@@ -17,6 +17,8 @@ const AIRTABLE_TOKEN = process.env.AIRTABLE_TOKEN || '';
 const AIRTABLE_BASE_ID = process.env.AIRTABLE_BASE_ID || '';
 const AIRTABLE_EVENT_LOG_TABLE_NAME = process.env.AIRTABLE_EVENT_LOG_TABLE_NAME || 'Bus Route Event Log';
 const AIRTABLE_DAILY_STATUS_TABLE_NAME = process.env.AIRTABLE_DAILY_STATUS_TABLE_NAME || 'Bus Daily Status';
+const AIRTABLE_SCHOOL_YEARS_TABLE_NAME = process.env.AIRTABLE_SCHOOL_YEARS_TABLE_NAME || 'School Years';
+const AIRTABLE_BUS_ROUTES_TABLE_NAME = process.env.AIRTABLE_BUS_ROUTES_TABLE_NAME || 'Bus Routes';
 
 const STATUS_VALUES = ['Waiting', 'Arrived', 'Loading', 'Ready to Board', 'Departed', 'Delayed', 'Cancelled'];
 
@@ -509,6 +511,113 @@ async function importData({ routes = [], spots = [] }) {
   return { ok: true, importedRoutes: routes.length, importedSpots: spots.length };
 }
 
+async function airtableListRecords(tableName, { fields } = {}) {
+  if (!AIRTABLE_TOKEN || !AIRTABLE_BASE_ID) throw new Error('Missing AIRTABLE_TOKEN or AIRTABLE_BASE_ID environment variable.');
+  const records = [];
+  let offset;
+  do {
+    const url = new URL(`https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${encodeURIComponent(tableName)}`);
+    url.searchParams.set('pageSize', '100');
+    if (fields) fields.forEach((field) => url.searchParams.append('fields[]', field));
+    if (offset) url.searchParams.set('offset', offset);
+    const response = await fetch(url, { headers: { Authorization: `Bearer ${AIRTABLE_TOKEN}` } });
+    if (!response.ok) throw new Error(`Airtable fetch of "${tableName}" failed ${response.status}: ${await response.text()}`);
+    const data = await response.json();
+    records.push(...data.records);
+    offset = data.offset;
+  } while (offset);
+  return records;
+}
+
+async function findCurrentSchoolYearRecordId() {
+  const records = await airtableListRecords(AIRTABLE_SCHOOL_YEARS_TABLE_NAME, { fields: ['Is Current Year'] });
+  const current = records.find((record) => record.fields && record.fields['Is Current Year']);
+  if (!current) throw new Error(`No record in the "${AIRTABLE_SCHOOL_YEARS_TABLE_NAME}" table has "Is Current Year" checked.`);
+  return current.id;
+}
+
+// Maps a Bus Routes record to the shape normalizeRouteInput expects. Business-rule notes:
+// - AM / PM = "AM" -> the morning arrival screen (workflow "To School Arrival Only").
+// - PM + "Regular dismissal" -> From School Dismissal screen.
+// - PM + "Primary dismissal" -> PRI Dismissal screen.
+// - Anything else (Other, Early dismissal, Both, blank) imports inactive (hidden from every
+//   screen) and gets flagged so the office can review and fix it in Airtable or Turso by hand.
+// - Airtable has no concept of Friday dismissal today, so useFriday is always false here.
+function mapAirtableRouteRecord(record) {
+  const fields = record.fields || {};
+  const routeName = fields['Route Name'] || record.id;
+  const ampm = fields['AM / PM'] || '';
+  const dismissal = fields['Primary Dismissal'] || '';
+  const color = fields['Bus Color'] || '';
+  const company = fields['Bus Company'] || '';
+
+  let workflowType = 'From School Dismissal';
+  let active = true;
+
+  if (ampm === 'AM') {
+    workflowType = 'To School Arrival Only';
+  } else if (ampm === 'PM') {
+    if (dismissal === 'Regular dismissal') {
+      workflowType = 'From School Dismissal';
+    } else if (dismissal === 'Primary dismissal') {
+      workflowType = 'PRI Dismissal';
+    } else {
+      active = false; // Other / Early dismissal / blank - needs manual review
+    }
+  } else {
+    active = false; // "Both" or an unexpected AM/PM value - needs manual review
+  }
+
+  return {
+    id: slugify(routeName),
+    routeCode: routeName,
+    displayName: color || routeName,
+    color,
+    company,
+    workflowType,
+    useFriday: false,
+    active,
+    airtableRecordId: record.id,
+    ampmRaw: ampm,
+    dismissalRaw: dismissal,
+  };
+}
+
+async function syncRoutesFromAirtable() {
+  const currentYearId = await findCurrentSchoolYearRecordId();
+  const busRouteRecords = await airtableListRecords(AIRTABLE_BUS_ROUTES_TABLE_NAME, {
+    fields: ['Route Name', 'School Year', 'AM / PM', 'Primary Dismissal', 'Bus Company', 'Bus Color'],
+  });
+  const currentYearRecords = busRouteRecords.filter((record) => {
+    const years = record.fields?.['School Year'];
+    return Array.isArray(years) && years.includes(currentYearId);
+  });
+
+  const flagged = [];
+  const mappedRoutes = currentYearRecords.map((record) => {
+    const mapped = mapAirtableRouteRecord(record);
+    if (!mapped.active) {
+      flagged.push({ routeCode: mapped.routeCode, ampm: mapped.ampmRaw, dismissal: mapped.dismissalRaw });
+    }
+    return mapped;
+  });
+  mappedRoutes.sort((a, b) => a.workflowType.localeCompare(b.workflowType) || a.displayName.localeCompare(b.displayName));
+
+  const result = await importData({ routes: mappedRoutes });
+
+  const syncedAirtableIds = mappedRoutes.map((route) => route.airtableRecordId);
+  if (syncedAirtableIds.length) {
+    await run(
+      `UPDATE routes SET active = 0, updated_at = CURRENT_TIMESTAMP
+       WHERE airtable_record_id IS NOT NULL AND airtable_record_id != ''
+       AND airtable_record_id NOT IN (${syncedAirtableIds.map(() => '?').join(',')})`,
+      syncedAirtableIds
+    );
+  }
+
+  return { ok: true, importedRoutes: result.importedRoutes, flagged };
+}
+
 async function airtableCreateRecords(tableName, records) {
   if (!AIRTABLE_TOKEN || !AIRTABLE_BASE_ID || !records.length) return { skipped: true, count: 0 };
   let count = 0;
@@ -699,6 +808,18 @@ app.post('/api/admin/import', async (req, res) => {
   }
 });
 
+app.post('/api/admin/sync-airtable-routes', async (req, res) => {
+  if (!validateAdminSecret(req, res)) return;
+  try {
+    const result = await syncRoutesFromAirtable();
+    notifyDisplays();
+    res.json(result);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.get('/api/admin/data', async (req, res) => {
   if (!validateAdminSecret(req, res)) return;
   try {
@@ -744,6 +865,10 @@ app.get('/', (req, res) => {
   res.redirect('/current');
 });
 
-app.listen(PORT, () => {
-  console.log(`Bus screen running on port ${PORT}`);
-});
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log(`Bus screen running on port ${PORT}`);
+  });
+}
+
+module.exports = app;
