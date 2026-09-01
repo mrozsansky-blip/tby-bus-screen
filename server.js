@@ -589,10 +589,12 @@ async function airtableListRecords(tableName, { fields, filterByFormula } = {}) 
   return records;
 }
 
-async function airtableGetRecord(tableName, recordId, fields) {
+// Airtable's single-record GET endpoint (unlike the list endpoint) does not accept a `fields[]`
+// query parameter - passing one causes a 422 INVALID_REQUEST_UNKNOWN. It always returns every
+// field, which is fine here since we only ever fetch one Bus Routes record at a time.
+async function airtableGetRecord(tableName, recordId) {
   if (!AIRTABLE_TOKEN || !AIRTABLE_BASE_ID) throw new Error('Missing AIRTABLE_TOKEN or AIRTABLE_BASE_ID environment variable.');
-  const url = new URL(`https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${encodeURIComponent(tableName)}/${encodeURIComponent(recordId)}`);
-  if (fields) fields.forEach((field) => url.searchParams.append('fields[]', field));
+  const url = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${encodeURIComponent(tableName)}/${encodeURIComponent(recordId)}`;
   const response = await fetch(url, { headers: { Authorization: `Bearer ${AIRTABLE_TOKEN}` } });
   if (!response.ok) throw new Error(`Airtable fetch of "${tableName}/${recordId}" failed ${response.status}: ${await response.text()}`);
   return response.json();
@@ -721,7 +723,7 @@ async function resolveBusDepartureRecipients(routeId) {
   if (!route) throw new Error('Route not found.');
   if (!route.airtable_record_id) throw new Error('This route has no linked Airtable Bus Routes record (sync it from Airtable first).');
 
-  const busRecord = await airtableGetRecord(AIRTABLE_BUS_ROUTES_TABLE_NAME, route.airtable_record_id, ['AM / PM', 'AM Students', 'PM Students']);
+  const busRecord = await airtableGetRecord(AIRTABLE_BUS_ROUTES_TABLE_NAME, route.airtable_record_id);
   const ampm = busRecord.fields?.['AM / PM'] || '';
   const studentIds = ampm === 'AM' ? busRecord.fields?.['AM Students'] || [] : busRecord.fields?.['PM Students'] || [];
   const displayName = route.display_name || route.route_code || 'Bus';
