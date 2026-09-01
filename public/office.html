@@ -303,11 +303,13 @@
         try {
           const preview = await api(`/api/office/route/${recordId}/notify-departure/preview`, { method: 'POST', body: JSON.stringify({}) });
           if (!preview.count) {
-            showMessage(`No text-able parent numbers found for ${routeName}.`, 'error');
+            const codeSuffix = preview.routeCode ? ` (route code ${preview.routeCode})` : '';
+            showMessage(`No text-able parent numbers found for ${routeName}${codeSuffix}.`, 'error');
             return;
           }
+          const codeSuffix = preview.routeCode ? ` (route code ${preview.routeCode})` : '';
           const confirmed = window.confirm(
-            `Text ${preview.count} parent(s) on the ${routeName} bus?\n\n"${preview.message}"` +
+            `Text ${preview.count} parent(s) on the ${routeName}${codeSuffix} bus?\n\n"${preview.message}"` +
             (preview.sandbox ? '\n\n(Sandbox mode: no real texts will be sent.)' : '')
           );
           if (!confirmed) return;

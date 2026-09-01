@@ -729,11 +729,12 @@ async function resolveBusDepartureRecipients(routeId) {
   const ampm = busRecord.fields?.['AM / PM'] || '';
   const transportationIds = ampm === 'AM' ? busRecord.fields?.['AM Students'] || [] : busRecord.fields?.['PM Students'] || [];
   const displayName = route.display_name || route.route_code || 'Bus';
-  if (!transportationIds.length) return { displayName, recipients: [] };
+  const routeCode = route.route_code || '';
+  if (!transportationIds.length) return { displayName, routeCode, recipients: [] };
 
   const transportationRows = await airtableListRecordsByIds(AIRTABLE_STUDENT_TRANSPORTATION_TABLE_NAME, transportationIds, ['Family']);
   const familyIds = [...new Set(transportationRows.flatMap((row) => row.fields?.Family || []))];
-  if (!familyIds.length) return { displayName, recipients: [] };
+  if (!familyIds.length) return { displayName, routeCode, recipients: [] };
 
   const families = await airtableListRecordsByIds(AIRTABLE_FAMILIES_TABLE_NAME, familyIds, ['Father Cell', 'Mother Cell', 'Do Not Text']);
   const seen = new Set();
@@ -747,7 +748,7 @@ async function resolveBusDepartureRecipients(routeId) {
       recipients.push({ normalizedPhoneNumber: phone, anonymousReference: family.id });
     }
   }
-  return { displayName, recipients };
+  return { displayName, routeCode, recipients };
 }
 
 function busDepartureMessage(displayName) {
@@ -767,11 +768,11 @@ async function textgridMcpCall(name, args) {
 }
 
 async function previewBusDeparture(routeId) {
-  const { displayName, recipients } = await resolveBusDepartureRecipients(routeId);
-  if (!recipients.length) return { message: busDepartureMessage(displayName), count: 0, confirmationToken: null, expiresInSeconds: 0, sandbox: null };
+  const { displayName, routeCode, recipients } = await resolveBusDepartureRecipients(routeId);
+  if (!recipients.length) return { message: busDepartureMessage(displayName), routeCode, count: 0, confirmationToken: null, expiresInSeconds: 0, sandbox: null };
   const message = busDepartureMessage(displayName);
   const result = await textgridMcpCall('preview_sms_send', { message, recipients });
-  return { message, count: result.uniqueValidRecipients, confirmationToken: result.confirmationToken, expiresInSeconds: result.expiresInSeconds, sandbox: result.sandboxMode };
+  return { message, routeCode, count: result.uniqueValidRecipients, confirmationToken: result.confirmationToken, expiresInSeconds: result.expiresInSeconds, sandbox: result.sandboxMode };
 }
 
 async function sendBusDeparture(routeId, message, confirmationToken) {
