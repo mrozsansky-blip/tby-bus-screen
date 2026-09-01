@@ -4,5 +4,11 @@
       "path": "/api/cron/export-airtable",
       "schedule": "30 3 * * *"
     }
+  ],
+  "rewrites": [
+    {
+      "source": "/(.*)",
+      "destination": "/api/index"
+    }
   ]
 }
