@@ -19,7 +19,7 @@ const AIRTABLE_EVENT_LOG_TABLE_NAME = process.env.AIRTABLE_EVENT_LOG_TABLE_NAME 
 const AIRTABLE_DAILY_STATUS_TABLE_NAME = process.env.AIRTABLE_DAILY_STATUS_TABLE_NAME || 'Bus Daily Status';
 const AIRTABLE_SCHOOL_YEARS_TABLE_NAME = process.env.AIRTABLE_SCHOOL_YEARS_TABLE_NAME || 'School Years';
 const AIRTABLE_BUS_ROUTES_TABLE_NAME = process.env.AIRTABLE_BUS_ROUTES_TABLE_NAME || 'Bus Routes';
-const AIRTABLE_STUDENTS_TABLE_NAME = process.env.AIRTABLE_STUDENTS_TABLE_NAME || 'Students';
+const AIRTABLE_STUDENT_TRANSPORTATION_TABLE_NAME = process.env.AIRTABLE_STUDENT_TRANSPORTATION_TABLE_NAME || 'Student Transportation';
 const AIRTABLE_FAMILIES_TABLE_NAME = process.env.AIRTABLE_FAMILIES_TABLE_NAME || 'Families';
 
 const TEXTING_SYSTEM_URL = (process.env.TEXTING_SYSTEM_URL || '').replace(/\/+$/, '');
@@ -711,9 +711,11 @@ function normalizeUsPhone(value) {
   return '';
 }
 
-// Resolves who to text for a route's departure: Bus Routes record -> linked Students (via the
-// AM Students / PM Students reverse-link field matching the route's own AM/PM value) -> each
-// student's Family -> Father Cell / Mother Cell, skipping families with "Do Not Text" checked.
+// Resolves who to text for a route's departure: Bus Routes record -> linked Student
+// Transportation records (via the AM Students / PM Students reverse-link field matching the
+// route's own AM/PM value - despite the name, these reverse-link to Student Transportation rows,
+// not Students rows directly) -> each row's own Family link -> Father Cell / Mother Cell,
+// skipping families with "Do Not Text" checked.
 // Not using the separate "Dismissal Students" reverse link - that's a different assignment type
 // on Student Transportation and its overlap with PM Students isn't established; if PM Students
 // turns out to be the wrong field for "who rides this bus home," this is the place to change it.
@@ -725,12 +727,12 @@ async function resolveBusDepartureRecipients(routeId) {
 
   const busRecord = await airtableGetRecord(AIRTABLE_BUS_ROUTES_TABLE_NAME, route.airtable_record_id);
   const ampm = busRecord.fields?.['AM / PM'] || '';
-  const studentIds = ampm === 'AM' ? busRecord.fields?.['AM Students'] || [] : busRecord.fields?.['PM Students'] || [];
+  const transportationIds = ampm === 'AM' ? busRecord.fields?.['AM Students'] || [] : busRecord.fields?.['PM Students'] || [];
   const displayName = route.display_name || route.route_code || 'Bus';
-  if (!studentIds.length) return { displayName, recipients: [] };
+  if (!transportationIds.length) return { displayName, recipients: [] };
 
-  const students = await airtableListRecordsByIds(AIRTABLE_STUDENTS_TABLE_NAME, studentIds, ['Family']);
-  const familyIds = [...new Set(students.flatMap((student) => student.fields?.Family || []))];
+  const transportationRows = await airtableListRecordsByIds(AIRTABLE_STUDENT_TRANSPORTATION_TABLE_NAME, transportationIds, ['Family']);
+  const familyIds = [...new Set(transportationRows.flatMap((row) => row.fields?.Family || []))];
   if (!familyIds.length) return { displayName, recipients: [] };
 
   const families = await airtableListRecordsByIds(AIRTABLE_FAMILIES_TABLE_NAME, familyIds, ['Father Cell', 'Mother Cell', 'Do Not Text']);
