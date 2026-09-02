@@ -19,8 +19,6 @@ const AIRTABLE_EVENT_LOG_TABLE_NAME = process.env.AIRTABLE_EVENT_LOG_TABLE_NAME 
 const AIRTABLE_DAILY_STATUS_TABLE_NAME = process.env.AIRTABLE_DAILY_STATUS_TABLE_NAME || 'Bus Daily Status';
 const AIRTABLE_SCHOOL_YEARS_TABLE_NAME = process.env.AIRTABLE_SCHOOL_YEARS_TABLE_NAME || 'School Years';
 const AIRTABLE_BUS_ROUTES_TABLE_NAME = process.env.AIRTABLE_BUS_ROUTES_TABLE_NAME || 'Bus Routes';
-const AIRTABLE_STUDENT_TRANSPORTATION_TABLE_NAME = process.env.AIRTABLE_STUDENT_TRANSPORTATION_TABLE_NAME || 'Student Transportation';
-const AIRTABLE_FAMILIES_TABLE_NAME = process.env.AIRTABLE_FAMILIES_TABLE_NAME || 'Families';
 
 const TEXTING_SYSTEM_URL = (process.env.TEXTING_SYSTEM_URL || '').replace(/\/+$/, '');
 const TEXTING_MCP_AUTH_TOKEN = process.env.TEXTING_MCP_AUTH_TOKEN || '';
@@ -75,6 +73,7 @@ async function createSchema() {
       sort_order INTEGER NOT NULL DEFAULT 9999,
       active INTEGER NOT NULL DEFAULT 1,
       airtable_record_id TEXT,
+      texting_group_name TEXT,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     )`,
@@ -135,6 +134,15 @@ async function createSchema() {
 
   for (const statement of statements) {
     await run(statement);
+  }
+
+  // routes.texting_group_name was added after this table already existed in production, where
+  // CREATE TABLE IF NOT EXISTS above is a no-op - ALTER TABLE picks up existing deployments.
+  // Guarded because there's no "ADD COLUMN IF NOT EXISTS" in SQLite/libSQL.
+  try {
+    await run(`ALTER TABLE routes ADD COLUMN texting_group_name TEXT`);
+  } catch (error) {
+    if (!/duplicate column/i.test(String(error?.message || ''))) throw error;
   }
 }
 
@@ -589,32 +597,6 @@ async function airtableListRecords(tableName, { fields, filterByFormula } = {}) 
   return records;
 }
 
-// Airtable's single-record GET endpoint (unlike the list endpoint) does not accept a `fields[]`
-// query parameter - passing one causes a 422 INVALID_REQUEST_UNKNOWN. It always returns every
-// field, which is fine here since we only ever fetch one Bus Routes record at a time.
-async function airtableGetRecord(tableName, recordId) {
-  if (!AIRTABLE_TOKEN || !AIRTABLE_BASE_ID) throw new Error('Missing AIRTABLE_TOKEN or AIRTABLE_BASE_ID environment variable.');
-  const url = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${encodeURIComponent(tableName)}/${encodeURIComponent(recordId)}`;
-  const response = await fetch(url, { headers: { Authorization: `Bearer ${AIRTABLE_TOKEN}` } });
-  if (!response.ok) throw new Error(`Airtable fetch of "${tableName}/${recordId}" failed ${response.status}: ${await response.text()}`);
-  return response.json();
-}
-
-// Fetches specific records by id via filterByFormula (Airtable's REST API has no bulk-get-by-id
-// endpoint). Chunked because filterByFormula has a practical URL-length limit.
-async function airtableListRecordsByIds(tableName, ids, fields) {
-  const unique = [...new Set(ids)].filter(Boolean);
-  if (!unique.length) return [];
-  const chunks = [];
-  for (let i = 0; i < unique.length; i += 40) chunks.push(unique.slice(i, i + 40));
-  const all = [];
-  for (const chunk of chunks) {
-    const formula = `OR(${chunk.map((id) => `RECORD_ID()='${id}'`).join(',')})`;
-    all.push(...(await airtableListRecords(tableName, { fields, filterByFormula: formula })));
-  }
-  return all;
-}
-
 async function findCurrentSchoolYearRecordId() {
   const records = await airtableListRecords(AIRTABLE_SCHOOL_YEARS_TABLE_NAME, { fields: ['Is Current Year'] });
   const current = records.find((record) => record.fields && record.fields['Is Current Year']);
@@ -704,51 +686,18 @@ async function syncRoutesFromAirtable() {
   return { ok: true, importedRoutes: result.importedRoutes, flagged };
 }
 
-function normalizeUsPhone(value) {
-  const digits = String(value || '').replace(/\D/g, '');
-  if (digits.length === 11 && digits.startsWith('1')) return digits.slice(1);
-  if (digits.length === 10) return digits;
-  return '';
-}
-
-// Resolves who to text for a route's departure: Bus Routes record -> linked Student
-// Transportation records (via the AM Students / PM Students reverse-link field matching the
-// route's own AM/PM value - despite the name, these reverse-link to Student Transportation rows,
-// not Students rows directly) -> each row's own Family link -> Father Cell / Mother Cell,
-// skipping families with "Do Not Text" checked.
-// Not using the separate "Dismissal Students" reverse link - that's a different assignment type
-// on Student Transportation and its overlap with PM Students isn't established; if PM Students
-// turns out to be the wrong field for "who rides this bus home," this is the place to change it.
-async function resolveBusDepartureRecipients(routeId) {
-  const routeRow = await run(`SELECT airtable_record_id, display_name, route_code FROM routes WHERE id = ?`, [routeId]);
-  const route = routeRow.rows[0];
-  if (!route) throw new Error('Route not found.');
-  if (!route.airtable_record_id) throw new Error('This route has no linked Airtable Bus Routes record (sync it from Airtable first).');
-
-  const busRecord = await airtableGetRecord(AIRTABLE_BUS_ROUTES_TABLE_NAME, route.airtable_record_id);
-  const ampm = busRecord.fields?.['AM / PM'] || '';
-  const transportationIds = ampm === 'AM' ? busRecord.fields?.['AM Students'] || [] : busRecord.fields?.['PM Students'] || [];
-  const displayName = route.display_name || route.route_code || 'Bus';
+// Builds the name of the contact group in the texting app (tby-texting-system) that corresponds
+// to this route. This mirrors formatBusRouteOptionLabel() in that repo's lib/campaignPreview.ts
+// exactly - same Airtable-sourced fields (Route Name -> route_code, Bus Color -> color, AM / PM +
+// Primary Dismissal -> workflow_type), same "AM · <route code> · <color>" / "<3:45|Primary> –
+// <color>" shape - since that's the label staff see there and named their bussing contact groups
+// after.
+function busDepartureGroupName(route) {
   const routeCode = route.route_code || '';
-  if (!transportationIds.length) return { displayName, routeCode, recipients: [] };
-
-  const transportationRows = await airtableListRecordsByIds(AIRTABLE_STUDENT_TRANSPORTATION_TABLE_NAME, transportationIds, ['Family']);
-  const familyIds = [...new Set(transportationRows.flatMap((row) => row.fields?.Family || []))];
-  if (!familyIds.length) return { displayName, routeCode, recipients: [] };
-
-  const families = await airtableListRecordsByIds(AIRTABLE_FAMILIES_TABLE_NAME, familyIds, ['Father Cell', 'Mother Cell', 'Do Not Text']);
-  const seen = new Set();
-  const recipients = [];
-  for (const family of families) {
-    if (family.fields?.['Do Not Text']) continue;
-    for (const raw of [family.fields?.['Father Cell'], family.fields?.['Mother Cell']]) {
-      const phone = normalizeUsPhone(raw);
-      if (!phone || seen.has(phone)) continue;
-      seen.add(phone);
-      recipients.push({ normalizedPhoneNumber: phone, anonymousReference: family.id });
-    }
-  }
-  return { displayName, routeCode, recipients };
+  const color = route.color || '';
+  if (route.workflow_type === 'PRI Dismissal') return `Primary – ${color || 'Color not set'}`;
+  if (route.workflow_type === 'From School Dismissal') return `3:45 – ${color || 'Color not set'}`;
+  return ['AM', routeCode, color].filter(Boolean).join(' · ');
 }
 
 function busDepartureMessage(displayName) {
@@ -767,19 +716,28 @@ async function textgridMcpCall(name, args) {
   return data.result?.structuredContent;
 }
 
+async function busDepartureRouteInfo(routeId) {
+  const routeRow = await run(`SELECT display_name, route_code, color, workflow_type, texting_group_name FROM routes WHERE id = ?`, [routeId]);
+  const route = routeRow.rows[0];
+  if (!route) throw new Error('Route not found.');
+  // A route's texting_group_name, when set via /setup.html's "Texting groups" picker, is an exact
+  // name pulled live from the texting app's own contact_groups table - preferred over the computed
+  // guess below since it can't drift out of sync with however staff actually named the group.
+  const groupName = (route.texting_group_name && route.texting_group_name.trim()) || busDepartureGroupName(route);
+  return { displayName: route.display_name || route.route_code || 'Bus', routeCode: route.route_code || '', groupName };
+}
+
 async function previewBusDeparture(routeId) {
-  const { displayName, routeCode, recipients } = await resolveBusDepartureRecipients(routeId);
-  if (!recipients.length) return { message: busDepartureMessage(displayName), routeCode, count: 0, confirmationToken: null, expiresInSeconds: 0, sandbox: null };
+  const { displayName, routeCode, groupName } = await busDepartureRouteInfo(routeId);
   const message = busDepartureMessage(displayName);
-  const result = await textgridMcpCall('preview_sms_send', { message, recipients });
-  return { message, routeCode, count: result.uniqueValidRecipients, confirmationToken: result.confirmationToken, expiresInSeconds: result.expiresInSeconds, sandbox: result.sandboxMode };
+  const result = await textgridMcpCall('preview_group_sms_send', { message, groupName });
+  return { message, routeCode, groupName, count: result.uniqueValidRecipients, confirmationToken: result.confirmationToken, expiresInSeconds: result.expiresInSeconds, sandbox: result.sandboxMode };
 }
 
 async function sendBusDeparture(routeId, message, confirmationToken) {
-  const { recipients } = await resolveBusDepartureRecipients(routeId);
-  if (!recipients.length) throw new Error('No recipients to text for this route.');
+  const { groupName } = await busDepartureRouteInfo(routeId);
   if (!confirmationToken) throw new Error('Missing confirmationToken from the preview step.');
-  const result = await textgridMcpCall('send_sms', { message, recipients, confirmationToken });
+  const result = await textgridMcpCall('send_group_sms', { message, groupName, confirmationToken });
   return { texted: result.successful?.length || 0, failed: result.failed?.length || 0, sandbox: result.sandboxMode };
 }
 
@@ -1039,7 +997,38 @@ app.get('/api/admin/data', async (req, res) => {
     await ensureSchema();
     const routes = await run(`SELECT * FROM routes ORDER BY sort_order ASC, display_name COLLATE NOCASE ASC`);
     const spots = await run(`SELECT * FROM parking_spots ORDER BY sort_order ASC, name COLLATE NOCASE ASC`);
-    res.json({ routes: routes.rows, spots: spots.rows });
+    const routesWithAutoGroup = routes.rows.map((route) => ({ ...route, auto_texting_group_name: busDepartureGroupName(route) }));
+    res.json({ routes: routesWithAutoGroup, spots: spots.rows });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Live list of contact groups from the texting app's own database (via its list_contact_groups
+// MCP tool), so /setup.html can offer an exact picker instead of guessing at names.
+app.get('/api/admin/texting-groups', async (req, res) => {
+  if (!validateAdminSecret(req, res)) return;
+  try {
+    const result = await textgridMcpCall('list_contact_groups', {});
+    res.json({ groups: result?.groups || [] });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Pins a route's departure text to one exact contact-group name (from the picker above) instead
+// of the computed guess in busDepartureGroupName(). Pass an empty groupName to clear the pin and
+// fall back to the computed guess again.
+app.post('/api/admin/route/:id/texting-group', async (req, res) => {
+  if (!validateAdminSecret(req, res)) return;
+  try {
+    await ensureSchema();
+    const groupName = typeof req.body?.groupName === 'string' ? req.body.groupName.trim() : '';
+    const result = await run(`UPDATE routes SET texting_group_name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, [groupName || null, req.params.id]);
+    if (!result.rowsAffected) return res.status(404).json({ error: 'Route not found.' });
+    res.json({ ok: true, id: req.params.id, textingGroupName: groupName || null });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: error.message });
