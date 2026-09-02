@@ -65,10 +65,16 @@ AIRTABLE_SCHOOL_YEARS_TABLE_NAME=School Years
 AIRTABLE_BUS_ROUTES_TABLE_NAME=Bus Routes
 AIRTABLE_EVENT_LOG_TABLE_NAME=Bus Route Event Log
 AIRTABLE_DAILY_STATUS_TABLE_NAME=Bus Daily Status
+TEXTING_SYSTEM_URL=https://your-tby-texting-system-deployment.vercel.app
+TEXTING_MCP_AUTH_TOKEN=the tby-texting-system deployment's MCP_AUTH_TOKEN
 ```
 
 All of the above are required once the app runs in production (`VERCEL=1`);
 locally, missing secrets just relax auth checks instead of failing closed.
+`TEXTING_SYSTEM_URL`/`TEXTING_MCP_AUTH_TOKEN` are the exception — without
+them the rest of the app works fine, but the office screens' "Text Parents:
+Bus Left" button fails with "Texting is not configured." See
+`SETUP-NOTES.md` for how routes map to texting groups.
 
 ## Status colors
 

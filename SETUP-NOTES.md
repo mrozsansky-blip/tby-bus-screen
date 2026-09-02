@@ -43,3 +43,31 @@ when this was set up:
 
 Parking spots have no Airtable table at all — they're entered once via
 `/setup.html`'s JSON import.
+
+# "Text Parents: Bus Left" texting groups
+
+The office dismissal screens' "Text Parents: Bus Left" button does **not**
+resolve parent phone numbers itself. It calls the `tby-texting-system` app's
+`/api/mcp` endpoint (`TEXTING_SYSTEM_URL` / `TEXTING_MCP_AUTH_TOKEN`) and
+asks it to text a **contact group already set up in that app**, by name —
+see `preview_group_sms_send` / `send_group_sms` in that repo's
+`docs-chatgpt-mcp.md`.
+
+The group name for a route is computed from the same synced `routes` row
+used everywhere else (`route_code`, `color`, `workflow_type`), built to
+match `formatBusRouteOptionLabel()` in `tby-texting-system`'s
+`lib/campaignPreview.ts` exactly (`busDepartureGroupName()` in `server.js`
+here is a copy of that logic against Turso column names):
+
+| Route                                  | Group name                          |
+| --------------------------------------- | ------------------------------------ |
+| AM (`To School Arrival Only`)           | `AM · <route_code> · <color>` (omits a blank piece, e.g. `AM · TBY1` if `color` is blank) |
+| Regular PM (`From School Dismissal`)    | `3:45 – <color>` (`Color not set` if blank) |
+| Primary PM (`PRI Dismissal`)            | `Primary – <color>` (`Color not set` if blank) |
+
+If a route's computed name doesn't match an existing group exactly, the
+preview call fails with an error listing the actual group names — rename
+the group (or fix the route's `route_code`/`color`) to match; the office
+screen shows that error directly. Group-name matching on the texting-app
+side ignores case, spacing, and dash/middot punctuation differences, but
+not the words themselves.
