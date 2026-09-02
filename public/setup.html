@@ -55,10 +55,12 @@
         </div>
       </div>
       <p style="margin-top:0;">
-        Pins each route's "Text Parents: Bus Left" send to one exact contact group, read live from
-        the texting app. Leave a route on "Auto" to keep the computed guess (route code / dismissal
-        / bus color); pick a group here only where that guess is wrong. Saves per row as soon as you
-        change the selection.
+        Most routes need nothing here: "Text Parents: Bus Left" already matches each route to its
+        assigned families in the texting app automatically, by the linked Airtable Bus Routes
+        record (as long as Transportation sync has been run there). Use this table only to
+        <strong>override</strong> that for a specific route - pin it to a contact group instead,
+        for a route with no Airtable link or one that should go to a hand-picked group. Saves per
+        row as soon as you change the selection.
       </p>
       <table id="groupTable" class="group-table" hidden>
         <thead>
@@ -168,7 +170,9 @@
 
           const autoOption = document.createElement('option');
           autoOption.value = '';
-          autoOption.textContent = `Auto (computed): ${route.auto_texting_group_name || '(none)'}`;
+          autoOption.textContent = route.airtable_record_id
+            ? 'Auto (matched via Airtable bus route)'
+            : 'Auto (⚠ no Airtable link - pin a group below)';
           select.appendChild(autoOption);
 
           for (const group of groups) {

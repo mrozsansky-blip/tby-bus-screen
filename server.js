@@ -686,20 +686,6 @@ async function syncRoutesFromAirtable() {
   return { ok: true, importedRoutes: result.importedRoutes, flagged };
 }
 
-// Builds the name of the contact group in the texting app (tby-texting-system) that corresponds
-// to this route. This mirrors formatBusRouteOptionLabel() in that repo's lib/campaignPreview.ts
-// exactly - same Airtable-sourced fields (Route Name -> route_code, Bus Color -> color, AM / PM +
-// Primary Dismissal -> workflow_type), same "AM · <route code> · <color>" / "<3:45|Primary> –
-// <color>" shape - since that's the label staff see there and named their bussing contact groups
-// after.
-function busDepartureGroupName(route) {
-  const routeCode = route.route_code || '';
-  const color = route.color || '';
-  if (route.workflow_type === 'PRI Dismissal') return `Primary – ${color || 'Color not set'}`;
-  if (route.workflow_type === 'From School Dismissal') return `3:45 – ${color || 'Color not set'}`;
-  return ['AM', routeCode, color].filter(Boolean).join(' · ');
-}
-
 function busDepartureMessage(displayName) {
   return `The ${displayName} bus has left. — Tiferes Bais Yaakov`;
 }
@@ -716,28 +702,43 @@ async function textgridMcpCall(name, args) {
   return data.result?.structuredContent;
 }
 
+// Picks how to reach this route's parents in the texting app (tby-texting-system):
+// - Normally by Airtable Bus Routes record id - both apps sync from the same Airtable table and
+//   store its record id, so the texting app can resolve "who's on this route" itself (via its own
+//   Transportation sync data) with no name-matching involved at all.
+// - texting_group_name, set via /setup.html's "Texting groups" picker, is a manual override for
+//   the rare route that has no Airtable link (or needs a hand-picked contact group instead) - it
+//   targets a named contact group there rather than a bus route.
 async function busDepartureRouteInfo(routeId) {
-  const routeRow = await run(`SELECT display_name, route_code, color, workflow_type, texting_group_name FROM routes WHERE id = ?`, [routeId]);
+  const routeRow = await run(`SELECT display_name, route_code, airtable_record_id, texting_group_name FROM routes WHERE id = ?`, [routeId]);
   const route = routeRow.rows[0];
   if (!route) throw new Error('Route not found.');
-  // A route's texting_group_name, when set via /setup.html's "Texting groups" picker, is an exact
-  // name pulled live from the texting app's own contact_groups table - preferred over the computed
-  // guess below since it can't drift out of sync with however staff actually named the group.
-  const groupName = (route.texting_group_name && route.texting_group_name.trim()) || busDepartureGroupName(route);
-  return { displayName: route.display_name || route.route_code || 'Bus', routeCode: route.route_code || '', groupName };
+  const displayName = route.display_name || route.route_code || 'Bus';
+  const routeCode = route.route_code || '';
+  const groupName = (route.texting_group_name && route.texting_group_name.trim()) || '';
+  const airtableRecordId = route.airtable_record_id || '';
+  if (!groupName && !airtableRecordId) {
+    throw new Error('This route has no linked Airtable Bus Routes record and no pinned texting group - sync it from Airtable, or pin a texting group for it on /setup.html.');
+  }
+  return { displayName, routeCode, groupName, airtableRecordId };
 }
 
 async function previewBusDeparture(routeId) {
-  const { displayName, routeCode, groupName } = await busDepartureRouteInfo(routeId);
+  const { displayName, routeCode, groupName, airtableRecordId } = await busDepartureRouteInfo(routeId);
   const message = busDepartureMessage(displayName);
-  const result = await textgridMcpCall('preview_group_sms_send', { message, groupName });
-  return { message, routeCode, groupName, count: result.uniqueValidRecipients, confirmationToken: result.confirmationToken, expiresInSeconds: result.expiresInSeconds, sandbox: result.sandboxMode };
+  const result = groupName
+    ? await textgridMcpCall('preview_group_sms_send', { message, groupName })
+    : await textgridMcpCall('preview_bus_route_sms_send', { message, airtableRecordId });
+  const target = result.busRouteLabel || result.groupName || groupName;
+  return { message, routeCode, groupName: target, count: result.uniqueValidRecipients, confirmationToken: result.confirmationToken, expiresInSeconds: result.expiresInSeconds, sandbox: result.sandboxMode };
 }
 
 async function sendBusDeparture(routeId, message, confirmationToken) {
-  const { groupName } = await busDepartureRouteInfo(routeId);
+  const { groupName, airtableRecordId } = await busDepartureRouteInfo(routeId);
   if (!confirmationToken) throw new Error('Missing confirmationToken from the preview step.');
-  const result = await textgridMcpCall('send_group_sms', { message, groupName, confirmationToken });
+  const result = groupName
+    ? await textgridMcpCall('send_group_sms', { message, groupName, confirmationToken })
+    : await textgridMcpCall('send_bus_route_sms', { message, airtableRecordId, confirmationToken });
   return { texted: result.successful?.length || 0, failed: result.failed?.length || 0, sandbox: result.sandboxMode };
 }
 
@@ -997,8 +998,7 @@ app.get('/api/admin/data', async (req, res) => {
     await ensureSchema();
     const routes = await run(`SELECT * FROM routes ORDER BY sort_order ASC, display_name COLLATE NOCASE ASC`);
     const spots = await run(`SELECT * FROM parking_spots ORDER BY sort_order ASC, name COLLATE NOCASE ASC`);
-    const routesWithAutoGroup = routes.rows.map((route) => ({ ...route, auto_texting_group_name: busDepartureGroupName(route) }));
-    res.json({ routes: routesWithAutoGroup, spots: spots.rows });
+    res.json({ routes: routes.rows, spots: spots.rows });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: error.message });
@@ -1006,7 +1006,9 @@ app.get('/api/admin/data', async (req, res) => {
 });
 
 // Live list of contact groups from the texting app's own database (via its list_contact_groups
-// MCP tool), so /setup.html can offer an exact picker instead of guessing at names.
+// MCP tool), so /setup.html can offer an exact picker for the manual-override path below - most
+// routes need no pin at all, since busDepartureRouteInfo() matches by Airtable record id
+// automatically once a route is synced.
 app.get('/api/admin/texting-groups', async (req, res) => {
   if (!validateAdminSecret(req, res)) return;
   try {
@@ -1018,9 +1020,9 @@ app.get('/api/admin/texting-groups', async (req, res) => {
   }
 });
 
-// Pins a route's departure text to one exact contact-group name (from the picker above) instead
-// of the computed guess in busDepartureGroupName(). Pass an empty groupName to clear the pin and
-// fall back to the computed guess again.
+// Pins a route's departure text to one exact contact-group name (from the picker above), overriding
+// the automatic Airtable-record-id bus-route match - for a route with no Airtable link, or one that
+// should go to a hand-picked contact group instead. Pass an empty groupName to clear the pin.
 app.post('/api/admin/route/:id/texting-group', async (req, res) => {
   if (!validateAdminSecret(req, res)) return;
   try {
