@@ -686,9 +686,18 @@ async function syncRoutesFromAirtable() {
   return { ok: true, importedRoutes: result.importedRoutes, flagged };
 }
 
-function busDepartureMessage(displayName) {
-  return `The ${displayName} bus has left. — Tiferes Bais Yaakov`;
+function formatSchoolTime(date = new Date()) {
+  return new Intl.DateTimeFormat('en-US', { timeZone: SCHOOL_TIME_ZONE, hour: 'numeric', minute: '2-digit', hour12: true }).format(date);
 }
+
+// The two canned "Text Parents" messages an office screen can send for a route. displayName is
+// the route's display_name - whatever staff and students actually see on that route's tile (a bus
+// color for PM routes, a route code like "TBY1" for AM routes) - reused as the "TBY <name>:"
+// prefix so a parent on more than one route's list can tell at a glance which bus a text is about.
+const BUS_NOTICE_MESSAGE_BUILDERS = {
+  departed: (displayName) => `TBY ${displayName}: ${displayName} left school at ${formatSchoolTime()}.`,
+  'not-arrived': (displayName) => `TBY ${displayName}: Your bus has not yet arrived at school. We will text you when it departs.`,
+};
 
 async function textgridMcpCall(name, args) {
   if (!TEXTING_SYSTEM_URL || !TEXTING_MCP_AUTH_TOKEN) throw new Error('Texting is not configured (missing TEXTING_SYSTEM_URL or TEXTING_MCP_AUTH_TOKEN).');
@@ -723,9 +732,11 @@ async function busDepartureRouteInfo(routeId) {
   return { displayName, routeCode, groupName, airtableRecordId };
 }
 
-async function previewBusDeparture(routeId) {
+async function previewBusNotice(routeId, kind) {
+  const buildMessage = BUS_NOTICE_MESSAGE_BUILDERS[kind];
+  if (!buildMessage) throw new Error('Invalid notice type.');
   const { displayName, routeCode, groupName, airtableRecordId } = await busDepartureRouteInfo(routeId);
-  const message = busDepartureMessage(displayName);
+  const message = buildMessage(displayName);
   const result = groupName
     ? await textgridMcpCall('preview_group_sms_send', { message, groupName })
     : await textgridMcpCall('preview_bus_route_sms_send', { message, airtableRecordId });
@@ -733,7 +744,7 @@ async function previewBusDeparture(routeId) {
   return { message, routeCode, groupName: target, count: result.uniqueValidRecipients, confirmationToken: result.confirmationToken, expiresInSeconds: result.expiresInSeconds, sandbox: result.sandboxMode };
 }
 
-async function sendBusDeparture(routeId, message, confirmationToken) {
+async function sendBusNotice(routeId, message, confirmationToken) {
   const { groupName, airtableRecordId } = await busDepartureRouteInfo(routeId);
   if (!confirmationToken) throw new Error('Missing confirmationToken from the preview step.');
   const result = groupName
@@ -951,7 +962,7 @@ app.post('/api/office/route/:recordId/next', async (req, res) => {
 app.post('/api/office/route/:recordId/notify-departure/preview', async (req, res) => {
   if (!validateOfficePin(req, res)) return;
   try {
-    res.json(await previewBusDeparture(req.params.recordId));
+    res.json(await previewBusNotice(req.params.recordId, 'departed'));
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: error.message });
@@ -961,7 +972,27 @@ app.post('/api/office/route/:recordId/notify-departure/preview', async (req, res
 app.post('/api/office/route/:recordId/notify-departure/send', async (req, res) => {
   if (!validateOfficePin(req, res)) return;
   try {
-    res.json(await sendBusDeparture(req.params.recordId, req.body?.message || '', req.body?.confirmationToken || ''));
+    res.json(await sendBusNotice(req.params.recordId, req.body?.message || '', req.body?.confirmationToken || ''));
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/office/route/:recordId/notify-not-arrived/preview', async (req, res) => {
+  if (!validateOfficePin(req, res)) return;
+  try {
+    res.json(await previewBusNotice(req.params.recordId, 'not-arrived'));
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/office/route/:recordId/notify-not-arrived/send', async (req, res) => {
+  if (!validateOfficePin(req, res)) return;
+  try {
+    res.json(await sendBusNotice(req.params.recordId, req.body?.message || '', req.body?.confirmationToken || ''));
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: error.message });

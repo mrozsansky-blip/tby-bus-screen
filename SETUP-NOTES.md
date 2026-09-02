@@ -44,10 +44,31 @@ when this was set up:
 Parking spots have no Airtable table at all — they're entered once via
 `/setup.html`'s JSON import.
 
-# "Text Parents: Bus Left" recipients
+# "Text Parents" notices
 
-The office dismissal screens' "Text Parents: Bus Left" button does **not**
-resolve parent phone numbers itself. It calls the `tby-texting-system` app's
+Each office screen shows one of two canned notices, chosen by
+`renderNotifyButton()` based on which screen it is:
+
+- **Morning (`/office/morning`)**: "Text Parents: Bus Not Here Yet" -
+  `TBY <name>: Your bus has not yet arrived at school. We will text you when
+  it departs.` For a delayed AM arrival.
+- **Every dismissal screen** (from-school, PRI, Friday - Friday's page shows
+  AM routes too, but they're being dismissed that day like everything else on
+  it): "Text Parents: Bus Left" - `TBY <name>: <name> left school at
+  <time>.`, where `<time>` is formatted in `SCHOOL_TIME_ZONE` at the moment
+  the office clicks the button (frozen into the message text right there, so
+  what's shown in the confirm dialog is exactly what sends). `<name>` is the
+  route's `display_name` - a bus color for PM routes, a route code like
+  `TBY1` for AM routes - used as a prefix so a parent on more than one
+  route's list can tell which bus a text is about.
+
+Both message builders live in `BUS_NOTICE_MESSAGE_BUILDERS`; the recipient
+resolution below is shared by both, keyed off `kind` (`'departed'` /
+`'not-arrived'`) through `previewBusNotice()`/`sendBusNotice()` and the
+`/api/office/route/:id/notify-departure/*` and `/notify-not-arrived/*`
+endpoints.
+
+Neither button resolves parent phone numbers itself. It calls the `tby-texting-system` app's
 `/api/mcp` endpoint (`TEXTING_SYSTEM_URL` / `TEXTING_MCP_AUTH_TOKEN`) and
 asks it to text that route's assigned families. Who a route targets is
 resolved in `busDepartureRouteInfo()`, in this order:

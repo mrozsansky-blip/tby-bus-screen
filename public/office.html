@@ -133,8 +133,11 @@
       }
 
       function renderNotifyButton(route) {
-        if (currentScreen === 'morning') return '';
-        return `<button class="mini-btn notify-btn" data-action="notify" data-id="${escapeHtml(route.id)}" data-name="${escapeHtml(route.name)}">Text Parents: Bus Left</button>`;
+        // The morning screen is waiting for buses to arrive, so it gets the "not here yet" notice
+        // instead of "bus left" (which is a dismissal-time concept).
+        const kind = currentScreen === 'morning' ? 'not-arrived' : 'departed';
+        const label = kind === 'not-arrived' ? 'Text Parents: Bus Not Here Yet' : 'Text Parents: Bus Left';
+        return `<button class="mini-btn notify-btn" data-action="notify" data-kind="${kind}" data-id="${escapeHtml(route.id)}" data-name="${escapeHtml(route.name)}">${label}</button>`;
       }
 
       function renderRoutes(routes) {
@@ -297,11 +300,12 @@
         }
       }
 
-      async function handleNotify(recordId, routeName) {
+      async function handleNotify(recordId, routeName, kind) {
         if (busy) return;
         busy = true;
+        const endpoint = kind === 'not-arrived' ? 'notify-not-arrived' : 'notify-departure';
         try {
-          const preview = await api(`/api/office/route/${recordId}/notify-departure/preview`, { method: 'POST', body: JSON.stringify({}) });
+          const preview = await api(`/api/office/route/${recordId}/${endpoint}/preview`, { method: 'POST', body: JSON.stringify({}) });
           const groupSuffix = preview.groupName ? ` (texting group "${preview.groupName}")` : '';
           if (!preview.count) {
             showMessage(`No text-able parent numbers found for ${routeName}${groupSuffix}.`, 'error');
@@ -312,7 +316,7 @@
             (preview.sandbox ? '\n\n(Sandbox mode: no real texts will be sent.)' : '')
           );
           if (!confirmed) return;
-          const result = await api(`/api/office/route/${recordId}/notify-departure/send`, {
+          const result = await api(`/api/office/route/${recordId}/${endpoint}/send`, {
             method: 'POST',
             body: JSON.stringify({ message: preview.message, confirmationToken: preview.confirmationToken }),
           });
@@ -360,7 +364,7 @@
         }
         const notifyTarget = event.target.closest('button[data-action="notify"]');
         if (notifyTarget) {
-          handleNotify(notifyTarget.dataset.id, notifyTarget.dataset.name);
+          handleNotify(notifyTarget.dataset.id, notifyTarget.dataset.name, notifyTarget.dataset.kind);
         }
       });
 
