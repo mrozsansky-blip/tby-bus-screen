@@ -73,6 +73,7 @@ async function createSchema() {
       sort_order INTEGER NOT NULL DEFAULT 9999,
       active INTEGER NOT NULL DEFAULT 1,
       airtable_record_id TEXT,
+      texting_group_name TEXT,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     )`,
@@ -133,6 +134,15 @@ async function createSchema() {
 
   for (const statement of statements) {
     await run(statement);
+  }
+
+  // routes.texting_group_name was added after this table already existed in production, where
+  // CREATE TABLE IF NOT EXISTS above is a no-op - ALTER TABLE picks up existing deployments.
+  // Guarded because there's no "ADD COLUMN IF NOT EXISTS" in SQLite/libSQL.
+  try {
+    await run(`ALTER TABLE routes ADD COLUMN texting_group_name TEXT`);
+  } catch (error) {
+    if (!/duplicate column/i.test(String(error?.message || ''))) throw error;
   }
 }
 
@@ -707,10 +717,14 @@ async function textgridMcpCall(name, args) {
 }
 
 async function busDepartureRouteInfo(routeId) {
-  const routeRow = await run(`SELECT display_name, route_code, color, workflow_type FROM routes WHERE id = ?`, [routeId]);
+  const routeRow = await run(`SELECT display_name, route_code, color, workflow_type, texting_group_name FROM routes WHERE id = ?`, [routeId]);
   const route = routeRow.rows[0];
   if (!route) throw new Error('Route not found.');
-  return { displayName: route.display_name || route.route_code || 'Bus', routeCode: route.route_code || '', groupName: busDepartureGroupName(route) };
+  // A route's texting_group_name, when set via /setup.html's "Texting groups" picker, is an exact
+  // name pulled live from the texting app's own contact_groups table - preferred over the computed
+  // guess below since it can't drift out of sync with however staff actually named the group.
+  const groupName = (route.texting_group_name && route.texting_group_name.trim()) || busDepartureGroupName(route);
+  return { displayName: route.display_name || route.route_code || 'Bus', routeCode: route.route_code || '', groupName };
 }
 
 async function previewBusDeparture(routeId) {
@@ -983,7 +997,38 @@ app.get('/api/admin/data', async (req, res) => {
     await ensureSchema();
     const routes = await run(`SELECT * FROM routes ORDER BY sort_order ASC, display_name COLLATE NOCASE ASC`);
     const spots = await run(`SELECT * FROM parking_spots ORDER BY sort_order ASC, name COLLATE NOCASE ASC`);
-    res.json({ routes: routes.rows, spots: spots.rows });
+    const routesWithAutoGroup = routes.rows.map((route) => ({ ...route, auto_texting_group_name: busDepartureGroupName(route) }));
+    res.json({ routes: routesWithAutoGroup, spots: spots.rows });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Live list of contact groups from the texting app's own database (via its list_contact_groups
+// MCP tool), so /setup.html can offer an exact picker instead of guessing at names.
+app.get('/api/admin/texting-groups', async (req, res) => {
+  if (!validateAdminSecret(req, res)) return;
+  try {
+    const result = await textgridMcpCall('list_contact_groups', {});
+    res.json({ groups: result?.groups || [] });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Pins a route's departure text to one exact contact-group name (from the picker above) instead
+// of the computed guess in busDepartureGroupName(). Pass an empty groupName to clear the pin and
+// fall back to the computed guess again.
+app.post('/api/admin/route/:id/texting-group', async (req, res) => {
+  if (!validateAdminSecret(req, res)) return;
+  try {
+    await ensureSchema();
+    const groupName = typeof req.body?.groupName === 'string' ? req.body.groupName.trim() : '';
+    const result = await run(`UPDATE routes SET texting_group_name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, [groupName || null, req.params.id]);
+    if (!result.rowsAffected) return res.status(404).json({ error: 'Route not found.' });
+    res.json({ ok: true, id: req.params.id, textingGroupName: groupName || null });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: error.message });

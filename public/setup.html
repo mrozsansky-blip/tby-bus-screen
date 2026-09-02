@@ -20,6 +20,11 @@
       .links { display: flex; flex-wrap: wrap; gap: 10px; margin: 12px 0 18px; }
       .links a { color: #2563eb; font-weight: 800; }
       .sync-row { display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap; margin-top: 24px; padding-top: 20px; border-top: 1px solid #d1d5db; }
+      table.group-table { width: 100%; border-collapse: collapse; margin-top: 14px; background: white; border-radius: 10px; overflow: hidden; }
+      table.group-table th, table.group-table td { text-align: left; padding: 10px; border-bottom: 1px solid #e5e7eb; vertical-align: top; }
+      table.group-table th { background: #f9fafb; font-size: 13px; }
+      table.group-table select { width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 8px; }
+      table.group-table .status { font-size: 12px; color: #6b7280; white-space: nowrap; }
     </style>
   </head>
   <body>
@@ -42,6 +47,25 @@
           <button id="sync" class="secondary" type="button">Sync routes from Airtable</button>
         </div>
       </div>
+
+      <div class="sync-row">
+        <div>
+          <label for="loadGroups" style="margin:0;">Texting groups (from tby-texting-system)</label>
+          <button id="loadGroups" class="secondary" type="button">Match routes to texting groups</button>
+        </div>
+      </div>
+      <p style="margin-top:0;">
+        Pins each route's "Text Parents: Bus Left" send to one exact contact group, read live from
+        the texting app. Leave a route on "Auto" to keep the computed guess (route code / dismissal
+        / bus color); pick a group here only where that guess is wrong. Saves per row as soon as you
+        change the selection.
+      </p>
+      <table id="groupTable" class="group-table" hidden>
+        <thead>
+          <tr><th>Route</th><th>Texting group</th><th></th></tr>
+        </thead>
+        <tbody id="groupTableBody"></tbody>
+      </table>
 
       <label for="json">Routes and spots JSON</label>
       <textarea id="json"></textarea>
@@ -105,6 +129,93 @@
           show('Error: ' + error.message);
         }
       });
+
+      const groupTable = document.getElementById('groupTable');
+      const groupTableBody = document.getElementById('groupTableBody');
+
+      document.getElementById('loadGroups').addEventListener('click', loadTextingGroups);
+
+      async function loadTextingGroups() {
+        try {
+          show('Loading routes and texting groups...');
+          const [dataResponse, groupsResponse] = await Promise.all([
+            fetch('/api/admin/data', { headers: adminHeaders() }),
+            fetch('/api/admin/texting-groups', { headers: adminHeaders() }),
+          ]);
+          const data = await dataResponse.json();
+          if (!dataResponse.ok) throw new Error(data.error || 'Could not load routes');
+          const groupsData = await groupsResponse.json();
+          if (!groupsResponse.ok) throw new Error(groupsData.error || 'Could not load texting groups');
+
+          renderGroupTable((data.routes || []).filter((route) => route.active), groupsData.groups || []);
+          show(`Loaded ${groupTableBody.children.length} active route(s) and ${(groupsData.groups || []).length} texting group(s).`);
+        } catch (error) {
+          show('Error: ' + error.message);
+        }
+      }
+
+      function renderGroupTable(routes, groups) {
+        groupTableBody.innerHTML = '';
+        for (const route of routes) {
+          const row = document.createElement('tr');
+
+          const nameCell = document.createElement('td');
+          nameCell.textContent = `${route.display_name} (${route.workflow_type})`;
+          row.appendChild(nameCell);
+
+          const selectCell = document.createElement('td');
+          const select = document.createElement('select');
+
+          const autoOption = document.createElement('option');
+          autoOption.value = '';
+          autoOption.textContent = `Auto (computed): ${route.auto_texting_group_name || '(none)'}`;
+          select.appendChild(autoOption);
+
+          for (const group of groups) {
+            const option = document.createElement('option');
+            option.value = group.name;
+            option.textContent = `${group.name} (${group.contactCount})`;
+            select.appendChild(option);
+          }
+
+          const currentValue = route.texting_group_name || '';
+          if (currentValue && !groups.some((group) => group.name === currentValue)) {
+            // Pinned to a name that no longer matches a live group (renamed/deleted there) - keep it
+            // visible and selected instead of silently swapping the pick out from under staff.
+            const staleOption = document.createElement('option');
+            staleOption.value = currentValue;
+            staleOption.textContent = `${currentValue} (not found in texting app)`;
+            select.appendChild(staleOption);
+          }
+          select.value = currentValue;
+
+          selectCell.appendChild(select);
+          row.appendChild(selectCell);
+
+          const statusCell = document.createElement('td');
+          statusCell.className = 'status';
+          row.appendChild(statusCell);
+
+          select.addEventListener('change', async () => {
+            statusCell.textContent = 'Saving…';
+            try {
+              const response = await fetch(`/api/admin/route/${encodeURIComponent(route.id)}/texting-group`, {
+                method: 'POST',
+                headers: adminHeaders(),
+                body: JSON.stringify({ groupName: select.value }),
+              });
+              const result = await response.json();
+              if (!response.ok) throw new Error(result.error || 'Save failed');
+              statusCell.textContent = 'Saved.';
+            } catch (error) {
+              statusCell.textContent = 'Error: ' + error.message;
+            }
+          });
+
+          groupTableBody.appendChild(row);
+        }
+        groupTable.hidden = routes.length === 0;
+      }
 
       document.getElementById('sync').addEventListener('click', async () => {
         try {
