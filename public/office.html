@@ -34,8 +34,12 @@
       </section>
 
       <section id="override-bar" class="override-bar hidden">
-        <span id="override-label" class="override-label">Public screen: Auto</span>
-        <div class="override-buttons">
+        <div class="override-summary">
+          <span id="override-label" class="override-label">Public screen: Auto</span>
+          <button type="button" id="override-toggle" class="mini-btn override-toggle">Change public screen…</button>
+        </div>
+        <div id="override-buttons" class="override-buttons hidden">
+          <p class="override-warning">⚠ This changes the PUBLIC dismissal screen in the hallway for everyone, not just this office view.</p>
           <button class="mini-btn" data-override="auto">Auto</button>
           <button class="mini-btn" data-override="from-school">From School</button>
           <button class="mini-btn" data-override="pri-dismissal">PRI</button>
@@ -52,6 +56,11 @@
         <h3 id="template-modal-title">Text Parents</h3>
         <p class="modal-subtitle" id="template-modal-subtitle"></p>
         <div id="template-modal-list"></div>
+        <div class="custom-message-box">
+          <label for="custom-message-input">Or write a custom message</label>
+          <textarea id="custom-message-input" placeholder="You can use {name} and {time} here too."></textarea>
+          <button type="button" id="send-custom-message" class="secondary-action">Send Custom Message</button>
+        </div>
         <button type="button" class="modal-close-btn" data-modal-close>Cancel</button>
       </div>
     </div>
@@ -65,6 +74,9 @@
       };
 
       const STATUS_ORDER = ['Waiting', 'Arrived', 'Loading', 'Departed'];
+      // Morning is arrival only - a bus either hasn't shown up yet or has, there's no
+      // loading/departing students off a bus that just got here.
+      const MORNING_STATUS_ORDER = ['Waiting', 'Arrived'];
       let officePin = window.localStorage.getItem('tbyOfficePin') || '';
       let currentScreen = getScreenKey();
       let currentSpots = [];
@@ -137,7 +149,8 @@
       }
 
       function renderStatusButtons(route) {
-        const buttons = STATUS_ORDER.map((status) => {
+        const order = currentScreen === 'morning' ? MORNING_STATUS_ORDER : STATUS_ORDER;
+        const buttons = order.map((status) => {
           const active = route.status === status;
           return `<button class="mini-btn ${active ? 'active' : ''}" data-action="status" data-id="${escapeHtml(route.id)}" data-status="${escapeHtml(status)}">${escapeHtml(status)}</button>`;
         }).join('');
@@ -335,6 +348,9 @@
         if (busy) return;
         const modal = document.getElementById('template-modal');
         const list = document.getElementById('template-modal-list');
+        modal.dataset.recordId = recordId;
+        modal.dataset.routeName = routeName;
+        document.getElementById('custom-message-input').value = '';
         document.getElementById('template-modal-title').textContent = `Text Parents: ${routeName}`;
         document.getElementById('template-modal-subtitle').textContent = 'Choose a message to send.';
         list.innerHTML = '<p class="modal-subtitle">Loading templates...</p>';
@@ -372,38 +388,57 @@
         return String(body || '').replace(/\{name\}/g, routeName).replace(/\{time\}/g, 'now');
       }
 
+      // Shared by the template picker and the custom-message box: preview, confirm, send. Only the
+      // preview request body and the dup-send warning differ between the two callers.
+      async function previewConfirmAndSend(recordId, routeName, previewBody, dupWarning = '') {
+        const preview = await api(`/api/office/route/${recordId}/notify/preview`, {
+          method: 'POST',
+          body: JSON.stringify({ ...previewBody, screen: currentScreen }),
+        });
+        const groupSuffix = preview.groupName ? ` (texting group "${preview.groupName}")` : '';
+        if (!preview.count) {
+          showMessage(`No text-able parent numbers found for ${routeName}${groupSuffix}.`, 'error');
+          return;
+        }
+        const confirmed = window.confirm(
+          dupWarning +
+          `Text ${preview.count} parent(s) on the ${routeName} bus${groupSuffix}?\n\n"${preview.message}"` +
+          (preview.sandbox ? '\n\n(Sandbox mode: no real texts will be sent.)' : '')
+        );
+        if (!confirmed) return;
+        const result = await api(`/api/office/route/${recordId}/notify/send`, {
+          method: 'POST',
+          body: JSON.stringify({ screen: currentScreen, templateId: preview.templateId || '', message: preview.message, confirmationToken: preview.confirmationToken }),
+        });
+        // Sandbox mode is already called out in the confirm dialog above, and a clean send
+        // needs no banner - the "texted" note on the card (renderNotifyButton) covers it.
+        // A partial failure is still worth flagging.
+        if (result.failed) {
+          showMessage(`${result.failed} of ${result.texted + result.failed} text(s) failed to send.`, 'error');
+        }
+        await loadOffice(true);
+      }
+
       async function sendWithTemplate(recordId, routeName, templateId, templateName, alreadySent) {
         if (busy) return;
         busy = true;
         closeModal(document.getElementById('template-modal'));
         try {
-          const preview = await api(`/api/office/route/${recordId}/notify/preview`, {
-            method: 'POST',
-            body: JSON.stringify({ templateId, screen: currentScreen }),
-          });
-          const groupSuffix = preview.groupName ? ` (texting group "${preview.groupName}")` : '';
-          if (!preview.count) {
-            showMessage(`No text-able parent numbers found for ${routeName}${groupSuffix}.`, 'error');
-            return;
-          }
           const dupWarning = alreadySent === '1' ? `⚠ "${templateName}" was already sent to this bus today. Send it again?\n\n` : '';
-          const confirmed = window.confirm(
-            dupWarning +
-            `Text ${preview.count} parent(s) on the ${routeName} bus${groupSuffix}?\n\n"${preview.message}"` +
-            (preview.sandbox ? '\n\n(Sandbox mode: no real texts will be sent.)' : '')
-          );
-          if (!confirmed) return;
-          const result = await api(`/api/office/route/${recordId}/notify/send`, {
-            method: 'POST',
-            body: JSON.stringify({ screen: currentScreen, templateId: preview.templateId, message: preview.message, confirmationToken: preview.confirmationToken }),
-          });
-          // Sandbox mode is already called out in the confirm dialog above, and a clean send
-          // needs no banner - the "texted" note on the card (renderNotifyButton) covers it.
-          // A partial failure is still worth flagging.
-          if (result.failed) {
-            showMessage(`${result.failed} of ${result.texted + result.failed} text(s) failed to send.`, 'error');
-          }
-          await loadOffice(true);
+          await previewConfirmAndSend(recordId, routeName, { templateId }, dupWarning);
+        } catch (error) {
+          showMessage(error.message, 'error');
+        } finally {
+          busy = false;
+        }
+      }
+
+      async function sendCustomMessage(recordId, routeName, customMessage) {
+        if (busy) return;
+        busy = true;
+        closeModal(document.getElementById('template-modal'));
+        try {
+          await previewConfirmAndSend(recordId, routeName, { customMessage });
         } catch (error) {
           showMessage(error.message, 'error');
         } finally {
@@ -428,10 +463,24 @@
         loadOverride();
       });
 
+      document.getElementById('override-toggle').addEventListener('click', () => {
+        document.getElementById('override-buttons').classList.toggle('hidden');
+      });
+
       document.getElementById('override-bar').addEventListener('click', (event) => {
         const target = event.target.closest('button[data-override]');
         if (!target) return;
-        setOverride(target.dataset.override);
+        const screen = target.dataset.override;
+        const label = screen === 'auto' ? 'Auto (follow the normal schedule)' : (SCREEN_TITLES[screen] || screen);
+        // This is the one office control that affects something other than this screen - a
+        // second look here is worth the extra tap, since it changes the hallway display for
+        // everyone until midnight, not just what this tablet shows.
+        const confirmed = window.confirm(
+          `Change the PUBLIC dismissal screen in the hallway to "${label}" until midnight?\n\nThis does not change what you see in this office view.`
+        );
+        if (!confirmed) return;
+        setOverride(screen);
+        document.getElementById('override-buttons').classList.add('hidden');
       });
 
       document.getElementById('grid').addEventListener('click', (event) => {
@@ -457,6 +506,13 @@
         const target = event.target.closest('button[data-action="pick-template"]');
         if (!target) return;
         sendWithTemplate(target.dataset.id, target.dataset.name, target.dataset.templateId, target.dataset.templateName, target.dataset.alreadySent);
+      });
+
+      document.getElementById('send-custom-message').addEventListener('click', () => {
+        const modal = document.getElementById('template-modal');
+        const text = document.getElementById('custom-message-input').value.trim();
+        if (!text) return;
+        sendCustomMessage(modal.dataset.recordId, modal.dataset.routeName, text);
       });
 
       document.querySelectorAll('.modal-overlay').forEach((overlay) => {

@@ -552,14 +552,15 @@ async function createEventLog({ routeId, screen, eventType, statusAfter, spotId,
 async function setRouteStatus({ routeId, screen, status, spotId, note }) {
   if (!STATUS_VALUES.includes(status)) throw new Error('Invalid status');
   const resolvedScreen = await normalizeScreen(screen);
+  // Morning is arrival only (a bus either hasn't shown up yet or has) - Loading/Departed etc.
+  // belong to the dismissal screens, where a bus picks up students and leaves.
+  if (resolvedScreen === 'morning' && !['Waiting', 'Arrived'].includes(status)) {
+    throw new Error('Morning arrival only supports Waiting and Arrived.');
+  }
   await validateRouteForScreen(routeId, resolvedScreen);
   await validateSpot(spotId || '');
   const current = await fetchStatus(routeId, resolvedScreen);
   if (!current) throw new Error('Route status not found.');
-
-  if (resolvedScreen !== 'morning' && status === 'Arrived' && !spotId && !current.parking_spot_id) {
-    throw new Error('Choose a parking spot before marking this bus arrived.');
-  }
 
   const now = new Date();
   const update = {
@@ -867,22 +868,25 @@ async function routeDepartureTime(routeId, screen) {
   return row.rows[0]?.departure_time || '';
 }
 
-async function previewBusNotice(routeId, templateId, screen) {
+// customBody lets office staff skip the template list and type a one-off message instead - it
+// still goes through renderTemplate, so {name}/{time} work in it exactly like a saved template.
+async function previewBusNotice(routeId, templateId, screen, customBody) {
+  const trimmedCustom = (customBody || '').trim();
   const [{ displayName, routeCode, groupName, airtableRecordId }, template, departureTime] = await Promise.all([
     busDepartureRouteInfo(routeId),
-    getActiveTextTemplate(templateId),
+    trimmedCustom ? Promise.resolve(null) : getActiveTextTemplate(templateId),
     routeDepartureTime(routeId, screen),
   ]);
   const time = formatSchoolTime(departureTime ? new Date(departureTime) : new Date());
-  const message = renderTemplate(template.body, { name: displayName, time });
+  const message = renderTemplate(trimmedCustom || template.body, { name: displayName, time });
   const result = groupName
     ? await textgridMcpCall('preview_group_sms_send', { message, groupName })
     : await textgridMcpCall('preview_bus_route_sms_send', { message, airtableRecordId });
   const target = result.busRouteLabel || result.groupName || groupName;
   return {
     message,
-    templateId: template.id,
-    templateName: template.name,
+    templateId: template ? template.id : null,
+    templateName: template ? template.name : 'Custom message',
     routeCode,
     groupName: target,
     count: result.uniqueValidRecipients,
@@ -897,7 +901,7 @@ async function sendBusNotice(routeId, screen, templateId, message, confirmationT
   if (!confirmationToken) throw new Error('Missing confirmationToken from the preview step.');
 
   const templateRow = templateId ? await run(`SELECT name FROM text_templates WHERE id = ?`, [templateId]) : null;
-  const templateName = templateRow?.rows[0]?.name || null;
+  const templateName = templateRow?.rows[0]?.name || (templateId ? null : 'Custom message');
   // Gives this send a recognizable name in the texting app's own /campaigns and /broadcasts (e.g.
   // "TBY Red: Bus Left") instead of a bare timestamp, so staff can confirm from there that a
   // specific text actually went out - that's the real send history; this app only tracks enough
@@ -1157,7 +1161,7 @@ app.post('/api/office/route/:recordId/next', async (req, res) => {
 app.post('/api/office/route/:recordId/notify/preview', async (req, res) => {
   if (!validateOfficePin(req, res)) return;
   try {
-    res.json(await previewBusNotice(req.params.recordId, req.body?.templateId || '', req.body?.screen || ''));
+    res.json(await previewBusNotice(req.params.recordId, req.body?.templateId || '', req.body?.screen || '', req.body?.customMessage || ''));
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: error.message });

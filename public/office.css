@@ -115,6 +115,27 @@ h1 {
   color: rgba(255, 255, 255, 0.85);
 }
 
+/* The Arr/Dep time boxes keep their light background even when the card turns a solid status
+   color - without this they render white text on a near-white box, so the times look blank. */
+.route-card.arrived .time-grid div,
+.route-card.loading .time-grid div,
+.route-card.departed .time-grid div {
+  background: rgba(255, 255, 255, 0.18);
+  border-color: rgba(255, 255, 255, 0.4);
+}
+
+.route-card.arrived .time-grid span,
+.route-card.loading .time-grid span,
+.route-card.departed .time-grid span {
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.route-card.arrived .time-grid strong,
+.route-card.loading .time-grid strong,
+.route-card.departed .time-grid strong {
+  color: #fff;
+}
+
 .card-top {
   display: flex;
   justify-content: space-between;
@@ -245,16 +266,19 @@ button {
 .pin-box button:active { transform: translateY(1px); }
 
 .override-bar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
   margin: 10px 10px 0;
   padding: 10px 12px;
   border-radius: 12px;
   background: var(--card);
   border: 2px solid var(--border);
+}
+
+.override-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
 }
 
 .override-label {
@@ -263,10 +287,31 @@ button {
   color: var(--muted);
 }
 
+/* Deliberately muted, not a primary button - this is a "change something elsewhere" action, not
+   part of the normal office workflow, and it shouldn't read as equally clickable as the tabs. */
+.override-toggle {
+  padding: 6px 10px;
+  background: var(--bg);
+  color: var(--muted);
+  border-color: var(--border);
+}
+
 .override-buttons {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 6px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border);
+}
+
+.override-warning {
+  flex-basis: 100%;
+  margin: 0 0 4px;
+  color: var(--orange);
+  font-size: 12px;
+  font-weight: 800;
 }
 
 .override-buttons .mini-btn {
@@ -377,6 +422,44 @@ button {
   color: #92400e;
 }
 
+.custom-message-box {
+  margin-top: 4px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.custom-message-box label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 12px;
+  font-weight: 900;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.custom-message-box textarea {
+  width: 100%;
+  min-height: 70px;
+  border: 2px solid var(--border);
+  border-radius: 9px;
+  padding: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  resize: vertical;
+}
+
+.secondary-action {
+  width: 100%;
+  margin-top: 8px;
+  padding: 10px;
+  border-radius: 10px;
+  background: var(--blue);
+  color: white;
+  font-weight: 900;
+  text-transform: uppercase;
+  font-size: 12px;
+}
+
 .modal-close-btn {
   width: 100%;
   margin-top: 6px;
@@ -416,9 +499,12 @@ button {
 
 .hidden { display: none; }
 
-@media (min-width: 1500px) {
-  .route-grid { grid-template-columns: repeat(6, minmax(270px, 1fr)); }
-}
+/* No fixed-column override above this - repeat(auto-fit, minmax(270px, 1fr)) on .route-grid
+   already adds columns as the screen gets wider, sized to what actually fits. A hardcoded
+   repeat(6, minmax(270px, 1fr)) used to kick in here, but 6 columns need ~1690px of real
+   width (6 * 270px + gaps) - on anything narrower than that (a lot of office monitors,
+   especially at 125-150% display scaling), it forced cards wider than the screen, and
+   overflow-x: hidden on body clipped the excess off the right edge instead of showing it. */
 
 @media (max-width: 800px) {
   .office-header { flex-direction: column; align-items: flex-start; }

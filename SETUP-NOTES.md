@@ -85,6 +85,14 @@ history browser. Editing or deleting a template never affects past
 `text_log` rows, since the log copies the rendered name and message in
 directly rather than referencing the template row.
 
+The picker also has a "custom message" box below the template list, for the
+one-off case that doesn't deserve a saved template - it goes through the
+same preview → confirm → send flow and the same `{name}`/`{time}`
+substitution, just with `customMessage` in place of `templateId`
+(`previewBusNotice()`'s third argument). It isn't covered by the
+duplicate-send guard (there's no template id to check against) and logs to
+`text_log` with `template_id = NULL`, `template_name = 'Custom message'`.
+
 There's deliberately no "view all sent texts" page here - the office
 tablets run in kiosk mode with no way back to a different page, and the
 real, authoritative send history already lives in `tby-texting-system`
@@ -128,3 +136,50 @@ campaign-builder audience type computes on the fly, not real `contact_groups`
 rows, so the match always failed. Bus-route texting now goes through the
 Airtable-record-id path above instead; `texting_group_name` still exists, but
 only as the manual per-route override in case 2.
+
+# Office view fixes (arrival/departure times, screen overflow, public-screen override)
+
+Three unrelated `/office/*` bugs, fixed together:
+
+- **Arrival/departure times looked blank on Arrived/Loading/Departed cards.**
+  The data was always there (`daily_status.arrival_time`/`departure_time`) -
+  it just rendered invisibly, because `.route-card.arrived/.loading/.departed`
+  paint the whole card a solid status color with white text, but the Arr/Dep
+  time boxes (`.time-grid`) kept their light-gray background and default
+  text color: white-on-near-white. Fixed in `office.css` by giving those
+  boxes a translucent-white background and explicit white text under each
+  status class, matching the pattern already used for `.spot-row span`.
+- **Route cards clipped off the right edge of the screen**, office view only.
+  `.route-grid` normally uses `repeat(auto-fit, minmax(270px, 1fr))`, which
+  never overflows - but a `@media (min-width: 1500px)` rule forced exactly
+  6 columns (`repeat(6, minmax(270px, 1fr))`), which needs ~1690px of real
+  width to fit without overflowing. Any screen between 1500-1690px wide
+  (common for office monitors, especially scaled displays) got cards wider
+  than the viewport, silently clipped by `overflow-x: hidden` on `body`.
+  Removed the override; `auto-fit` already adds columns as space allows.
+- **The public-screen override was too easy to hit by mistake.** Its four
+  buttons (Auto/From School/PRI/Friday) look almost identical to the office
+  tabs at the top of the page, but do something very different - they
+  override what the *public* dismissal screen in the hallway shows everyone,
+  until midnight, not just this tablet's view. Now collapsed behind a
+  "Change public screen…" toggle (closed by default) and a `window.confirm`
+  naming exactly what's about to change before it applies.
+
+- **`/office/morning` only offers Waiting/Arrived**, not the full
+  Waiting/Arrived/Loading/Departed set - a bus either hasn't shown up to
+  drop off students or it has, there's no loading/departing on that screen.
+  Enforced in both places: `renderStatusButtons()` picks `MORNING_STATUS_ORDER`
+  instead of `STATUS_ORDER` when `currentScreen === 'morning'`, and
+  `setRouteStatus()` rejects any other status server-side for that screen
+  (so a stale cached page, or a direct API call, can't set one either).
+- **Marking a dismissal bus Arrived no longer requires a parking spot
+  first.** `setRouteStatus()` used to throw ("Choose a parking spot before
+  marking this bus arrived.") unless a spot was already picked - staff can
+  now mark Arrived right away and assign the spot after, via the same spot
+  dropdown (`setRouteSpot()`, unaffected by status).
+
+# Custom text messages
+
+The "Text Parents" picker has a free-text box below the template list for a
+one-off message that doesn't need a saved template - see the "Text Parents"
+notices section above.
