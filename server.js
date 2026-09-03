@@ -552,6 +552,11 @@ async function createEventLog({ routeId, screen, eventType, statusAfter, spotId,
 async function setRouteStatus({ routeId, screen, status, spotId, note }) {
   if (!STATUS_VALUES.includes(status)) throw new Error('Invalid status');
   const resolvedScreen = await normalizeScreen(screen);
+  // Morning is arrival only (a bus either hasn't shown up yet or has) - Loading/Departed etc.
+  // belong to the dismissal screens, where a bus picks up students and leaves.
+  if (resolvedScreen === 'morning' && !['Waiting', 'Arrived'].includes(status)) {
+    throw new Error('Morning arrival only supports Waiting and Arrived.');
+  }
   await validateRouteForScreen(routeId, resolvedScreen);
   await validateSpot(spotId || '');
   const current = await fetchStatus(routeId, resolvedScreen);

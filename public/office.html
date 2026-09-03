@@ -74,6 +74,9 @@
       };
 
       const STATUS_ORDER = ['Waiting', 'Arrived', 'Loading', 'Departed'];
+      // Morning is arrival only - a bus either hasn't shown up yet or has, there's no
+      // loading/departing students off a bus that just got here.
+      const MORNING_STATUS_ORDER = ['Waiting', 'Arrived'];
       let officePin = window.localStorage.getItem('tbyOfficePin') || '';
       let currentScreen = getScreenKey();
       let currentSpots = [];
@@ -146,7 +149,8 @@
       }
 
       function renderStatusButtons(route) {
-        const buttons = STATUS_ORDER.map((status) => {
+        const order = currentScreen === 'morning' ? MORNING_STATUS_ORDER : STATUS_ORDER;
+        const buttons = order.map((status) => {
           const active = route.status === status;
           return `<button class="mini-btn ${active ? 'active' : ''}" data-action="status" data-id="${escapeHtml(route.id)}" data-status="${escapeHtml(status)}">${escapeHtml(status)}</button>`;
         }).join('');

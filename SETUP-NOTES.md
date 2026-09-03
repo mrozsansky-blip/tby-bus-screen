@@ -165,6 +165,14 @@ Three unrelated `/office/*` bugs, fixed together:
   "Change public screen…" toggle (closed by default) and a `window.confirm`
   naming exactly what's about to change before it applies.
 
+- **`/office/morning` only offers Waiting/Arrived**, not the full
+  Waiting/Arrived/Loading/Departed set - a bus either hasn't shown up to
+  drop off students or it has, there's no loading/departing on that screen.
+  Enforced in both places: `renderStatusButtons()` picks `MORNING_STATUS_ORDER`
+  instead of `STATUS_ORDER` when `currentScreen === 'morning'`, and
+  `setRouteStatus()` rejects any other status server-side for that screen
+  (so a stale cached page, or a direct API call, can't set one either).
+
 # Custom text messages
 
 The "Text Parents" picker has a free-text box below the template list for a
