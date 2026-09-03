@@ -163,7 +163,7 @@
         // that day's early dismissal) gets the full template picker.
         if (currentScreen === 'morning') return '';
         const texted = route.textsSentToday > 0;
-        const button = `<button class="mini-btn notify-btn ${texted ? 'texted' : ''}" data-action="notify" data-id="${escapeHtml(route.id)}" data-name="${escapeHtml(route.name)}">${texted ? 'Text Parents (sent) - Send Another' : 'Text Parents'}</button>`;
+        const button = `<button class="mini-btn notify-btn ${texted ? 'texted' : ''}" data-action="notify" data-id="${escapeHtml(route.id)}" data-name="${escapeHtml(route.name)}" data-departure="${escapeHtml(route.lastDeparture)}">${texted ? 'Text Parents (sent) - Send Another' : 'Text Parents'}</button>`;
         if (!texted) return button;
         const countNote = route.textsSentToday > 1 ? ` (+${route.textsSentToday - 1} more today)` : '';
         const note = `
@@ -344,12 +344,16 @@
       function openModal(modalEl) { modalEl.classList.remove('hidden'); }
       function closeModal(modalEl) { modalEl.classList.add('hidden'); }
 
-      async function openTemplatePicker(recordId, routeName) {
+      async function openTemplatePicker(recordId, routeName, departure) {
         if (busy) return;
         const modal = document.getElementById('template-modal');
         const list = document.getElementById('template-modal-list');
         modal.dataset.recordId = recordId;
         modal.dataset.routeName = routeName;
+        // Same fallback as the server's routeDepartureTime(): the recorded departure time for
+        // this bus if there is one, otherwise right now - so the preview here matches what the
+        // confirm dialog (rendered server-side) is about to show, instead of a literal "now".
+        const previewTime = formatTime(departure || new Date().toISOString());
         document.getElementById('custom-message-input').value = '';
         document.getElementById('template-modal-title').textContent = `Text Parents: ${routeName}`;
         document.getElementById('template-modal-subtitle').textContent = 'Choose a message to send.';
@@ -372,7 +376,7 @@
             return `
               <button type="button" class="template-option" data-action="pick-template" data-id="${escapeHtml(recordId)}" data-name="${escapeHtml(routeName)}" data-template-id="${escapeHtml(template.id)}" data-template-name="${escapeHtml(template.name)}" data-already-sent="${sentAt ? '1' : ''}">
                 <div class="template-name">${escapeHtml(template.name)}</div>
-                <div class="template-preview">${escapeHtml(renderPreviewText(template.body, routeName))}</div>
+                <div class="template-preview">${escapeHtml(renderPreviewText(template.body, routeName, previewTime))}</div>
                 ${warning}
               </button>
             `;
@@ -383,9 +387,10 @@
       }
 
       // Client-side approximation just for the picker preview text - the server renders the exact
-      // message (with the real send-time timestamp) in the confirm dialog before anything sends.
-      function renderPreviewText(body, routeName) {
-        return String(body || '').replace(/\{name\}/g, routeName).replace(/\{time\}/g, 'now');
+      // message (with the real send-time timestamp, in SCHOOL_TIME_ZONE) in the confirm dialog
+      // before anything sends. This is close enough to match at a glance, but isn't authoritative.
+      function renderPreviewText(body, routeName, timeText) {
+        return String(body || '').replace(/\{name\}/g, routeName).replace(/\{time\}/g, timeText);
       }
 
       // Shared by the template picker and the custom-message box: preview, confirm, send. Only the
@@ -492,7 +497,7 @@
         }
         const notifyTarget = event.target.closest('button[data-action="notify"]');
         if (notifyTarget) {
-          openTemplatePicker(notifyTarget.dataset.id, notifyTarget.dataset.name);
+          openTemplatePicker(notifyTarget.dataset.id, notifyTarget.dataset.name, notifyTarget.dataset.departure);
         }
       });
 
