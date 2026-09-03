@@ -56,14 +56,6 @@
       </div>
     </div>
 
-    <div id="history-modal" class="modal-overlay hidden">
-      <div class="modal-box">
-        <h3 id="history-modal-title">Texts sent today</h3>
-        <div id="history-modal-list"></div>
-        <button type="button" class="modal-close-btn" data-modal-close>Close</button>
-      </div>
-    </div>
-
     <script>
       const SCREEN_TITLES = {
         morning: 'Morning Bus Arrival',
@@ -161,7 +153,6 @@
         const note = `
           <div class="text-sent-note">
             ✓ "${escapeHtml(truncate(route.lastTextMessage, 70))}"${route.lastTextRecipientCount ? ` — ${route.lastTextRecipientCount} texted` : ''}${countNote}
-            <button type="button" class="view-history-btn" data-action="history" data-id="${escapeHtml(route.id)}" data-name="${escapeHtml(route.name)}">View all</button>
           </div>
         `;
         return button + note;
@@ -344,18 +335,27 @@
         list.innerHTML = '<p class="modal-subtitle">Loading templates...</p>';
         openModal(modal);
         try {
-          const data = await api('/api/office/templates');
-          const templates = data.templates || [];
+          const [templatesData, sentData] = await Promise.all([
+            api('/api/office/templates'),
+            api(`/api/office/route/${recordId}/sent-templates-today`),
+          ]);
+          const templates = templatesData.templates || [];
           if (!templates.length) {
             list.innerHTML = '<p class="modal-subtitle">No text templates are set up yet. Add one on /setup.html.</p>';
             return;
           }
-          list.innerHTML = templates.map((template) => `
-            <button type="button" class="template-option" data-action="pick-template" data-id="${escapeHtml(recordId)}" data-name="${escapeHtml(routeName)}" data-template-id="${escapeHtml(template.id)}">
-              <div class="template-name">${escapeHtml(template.name)}</div>
-              <div class="template-preview">${escapeHtml(renderPreviewText(template.body, routeName))}</div>
-            </button>
-          `).join('');
+          const sentAtByTemplateId = new Map((sentData.sent || []).map((entry) => [entry.templateId, entry.sentAt]));
+          list.innerHTML = templates.map((template) => {
+            const sentAt = sentAtByTemplateId.get(template.id);
+            const warning = sentAt ? `<div class="template-already-sent">⚠ Already sent to this bus today at ${formatTime(sentAt)}</div>` : '';
+            return `
+              <button type="button" class="template-option" data-action="pick-template" data-id="${escapeHtml(recordId)}" data-name="${escapeHtml(routeName)}" data-template-id="${escapeHtml(template.id)}" data-template-name="${escapeHtml(template.name)}" data-already-sent="${sentAt ? '1' : ''}">
+                <div class="template-name">${escapeHtml(template.name)}</div>
+                <div class="template-preview">${escapeHtml(renderPreviewText(template.body, routeName))}</div>
+                ${warning}
+              </button>
+            `;
+          }).join('');
         } catch (error) {
           list.innerHTML = `<p class="modal-subtitle">${escapeHtml(error.message)}</p>`;
         }
@@ -367,7 +367,7 @@
         return String(body || '').replace(/\{name\}/g, routeName).replace(/\{time\}/g, 'now');
       }
 
-      async function sendWithTemplate(recordId, routeName, templateId) {
+      async function sendWithTemplate(recordId, routeName, templateId, templateName, alreadySent) {
         if (busy) return;
         busy = true;
         closeModal(document.getElementById('template-modal'));
@@ -381,7 +381,9 @@
             showMessage(`No text-able parent numbers found for ${routeName}${groupSuffix}.`, 'error');
             return;
           }
+          const dupWarning = alreadySent === '1' ? `⚠ "${templateName}" was already sent to this bus today. Send it again?\n\n` : '';
           const confirmed = window.confirm(
+            dupWarning +
             `Text ${preview.count} parent(s) on the ${routeName} bus${groupSuffix}?\n\n"${preview.message}"` +
             (preview.sandbox ? '\n\n(Sandbox mode: no real texts will be sent.)' : '')
           );
@@ -400,30 +402,6 @@
           showMessage(error.message, 'error');
         } finally {
           busy = false;
-        }
-      }
-
-      async function openHistoryModal(recordId, routeName) {
-        const modal = document.getElementById('history-modal');
-        const list = document.getElementById('history-modal-list');
-        document.getElementById('history-modal-title').textContent = `Texts sent today: ${routeName}`;
-        list.innerHTML = '<p class="modal-subtitle">Loading...</p>';
-        openModal(modal);
-        try {
-          const data = await api(`/api/office/route/${recordId}/text-log`);
-          const entries = data.entries || [];
-          if (!entries.length) {
-            list.innerHTML = '<p class="modal-subtitle">No texts sent to this bus today.</p>';
-            return;
-          }
-          list.innerHTML = entries.map((entry) => `
-            <div class="history-entry">
-              <div class="history-meta">${escapeHtml(entry.template_name || 'Custom')} · ${formatTime(entry.sent_at)} · ${entry.recipient_count} texted${entry.failed_count ? `, ${entry.failed_count} failed` : ''}${entry.sandbox ? ' · sandbox' : ''}</div>
-              <div>${escapeHtml(entry.message)}</div>
-            </div>
-          `).join('');
-        } catch (error) {
-          list.innerHTML = `<p class="modal-subtitle">${escapeHtml(error.message)}</p>`;
         }
       }
 
@@ -460,11 +438,6 @@
         const notifyTarget = event.target.closest('button[data-action="notify"]');
         if (notifyTarget) {
           openTemplatePicker(notifyTarget.dataset.id, notifyTarget.dataset.name);
-          return;
-        }
-        const historyTarget = event.target.closest('button[data-action="history"]');
-        if (historyTarget) {
-          openHistoryModal(historyTarget.dataset.id, historyTarget.dataset.name);
         }
       });
 
@@ -477,7 +450,7 @@
       document.getElementById('template-modal-list').addEventListener('click', (event) => {
         const target = event.target.closest('button[data-action="pick-template"]');
         if (!target) return;
-        sendWithTemplate(target.dataset.id, target.dataset.name, target.dataset.templateId);
+        sendWithTemplate(target.dataset.id, target.dataset.name, target.dataset.templateId, target.dataset.templateName, target.dataset.alreadySent);
       });
 
       document.querySelectorAll('.modal-overlay').forEach((overlay) => {

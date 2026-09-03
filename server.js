@@ -843,13 +843,21 @@ async function previewBusNotice(routeId, templateId) {
 }
 
 async function sendBusNotice(routeId, screen, templateId, message, confirmationToken) {
-  const { groupName, airtableRecordId } = await busDepartureRouteInfo(routeId);
+  const { displayName, groupName, airtableRecordId } = await busDepartureRouteInfo(routeId);
   if (!confirmationToken) throw new Error('Missing confirmationToken from the preview step.');
-  const result = groupName
-    ? await textgridMcpCall('send_group_sms', { message, groupName, confirmationToken })
-    : await textgridMcpCall('send_bus_route_sms', { message, airtableRecordId, confirmationToken });
 
   const templateRow = templateId ? await run(`SELECT name FROM text_templates WHERE id = ?`, [templateId]) : null;
+  const templateName = templateRow?.rows[0]?.name || null;
+  // Gives this send a recognizable name in the texting app's own /campaigns and /broadcasts (e.g.
+  // "TBY Red: Bus Left") instead of a bare timestamp, so staff can confirm from there that a
+  // specific text actually went out - that's the real send history; this app only tracks enough
+  // to drive the "already texted" button state (see fetchTextSummaryByRoute/sentTemplateIdsToday).
+  const label = `TBY ${displayName}${templateName ? `: ${templateName}` : ''}`;
+
+  const result = groupName
+    ? await textgridMcpCall('send_group_sms', { message, groupName, confirmationToken, label })
+    : await textgridMcpCall('send_bus_route_sms', { message, airtableRecordId, confirmationToken, label });
+
   await run(
     `INSERT INTO text_log (id, service_date, screen, route_id, template_id, template_name, message, recipient_count, failed_count, sandbox, sent_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -859,7 +867,7 @@ async function sendBusNotice(routeId, screen, templateId, message, confirmationT
       screen || '',
       routeId,
       templateId || null,
-      templateRow?.rows[0]?.name || null,
+      templateName,
       message,
       result.successful?.length || 0,
       result.failed?.length || 0,
@@ -1120,19 +1128,23 @@ app.post('/api/office/route/:recordId/notify/send', async (req, res) => {
   }
 });
 
-// Full send history for one route on one day (defaults to today) - "did we already text this bus"
-// and everything sent so far, for the office grid's history popup.
-app.get('/api/office/route/:recordId/text-log', async (req, res) => {
+// Which templates have already been sent to this route today - just enough for the picker's
+// duplicate-send warning ("Bus Left was already sent at 3:52 PM - send again?"). The full send
+// history lives in the texting app's own /campaigns and /broadcasts (each send is labeled with
+// the route and template, see sendBusNotice) - these kiosk tablets have no way back to a page like
+// that, so this app doesn't try to duplicate it.
+app.get('/api/office/route/:recordId/sent-templates-today', async (req, res) => {
   if (!validateOfficePin(req, res)) return;
   try {
     await ensureSchema();
-    const serviceDate = req.query.date || toSchoolDateString();
+    const serviceDate = toSchoolDateString();
     const result = await run(
-      `SELECT template_name, message, recipient_count, failed_count, sandbox, sent_at
-       FROM text_log WHERE route_id = ? AND service_date = ? ORDER BY sent_at DESC`,
+      `SELECT template_id, MAX(sent_at) AS sent_at FROM text_log
+       WHERE route_id = ? AND service_date = ? AND template_id IS NOT NULL
+       GROUP BY template_id`,
       [req.params.recordId, serviceDate]
     );
-    res.json({ serviceDate, entries: result.rows });
+    res.json({ sent: result.rows.map((row) => ({ templateId: row.template_id, sentAt: row.sent_at })) });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: error.message });

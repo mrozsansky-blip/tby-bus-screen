@@ -306,19 +306,6 @@ button {
   overflow-wrap: anywhere;
 }
 
-.text-sent-note .view-history-btn {
-  display: inline;
-  border: none;
-  background: none;
-  padding: 0;
-  margin-left: 4px;
-  color: #166534;
-  font-weight: 900;
-  text-decoration: underline;
-  font-size: 11px;
-  cursor: pointer;
-}
-
 .modal-overlay {
   position: fixed;
   inset: 0;
@@ -377,6 +364,13 @@ button {
   font-weight: 600;
 }
 
+.template-option .template-already-sent {
+  margin-top: 6px;
+  font-size: 11px;
+  font-weight: 800;
+  color: #92400e;
+}
+
 .modal-close-btn {
   width: 100%;
   margin-top: 6px;
@@ -387,22 +381,6 @@ button {
   font-weight: 900;
   text-transform: uppercase;
   font-size: 12px;
-}
-
-.history-entry {
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 8px 10px;
-  margin-bottom: 8px;
-  font-size: 13px;
-}
-
-.history-entry .history-meta {
-  color: var(--muted);
-  font-size: 11px;
-  font-weight: 800;
-  text-transform: uppercase;
-  margin-bottom: 4px;
 }
 
 .pin-box,

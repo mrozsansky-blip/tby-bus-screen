@@ -70,13 +70,25 @@ deleting them on purpose doesn't bring them back):
 for the picker list and `/api/office/route/:id/notify/preview` +
 `/notify/send`) take a `templateId` instead of a fixed message. Every actual
 send (not preview) is logged to `text_log` - service date, screen, route,
-template name, the exact rendered message, and recipient/failure counts -
-which backs two things on the office grid: the button turns green
-("texted") once any template has been sent to that route today, and a "View
-all" link opens that route's full day of sent texts
-(`GET /api/office/route/:id/text-log`). Editing or deleting a template never
-touches this history, since the log copies the rendered name and message in
+template name, the exact rendered message, and recipient/failure counts.
+That log backs two on-page things only: the button turns green ("texted")
+once any template has been sent to that route today (with a note showing
+the last message and recipient count), and the template picker warns
+("⚠ Already sent to this bus today at ...") if the *same* template was
+already sent today for that route, via `GET
+/api/office/route/:id/sent-templates-today` - a duplicate-send guard, not a
+history browser. Editing or deleting a template never affects past
+`text_log` rows, since the log copies the rendered name and message in
 directly rather than referencing the template row.
+
+There's deliberately no "view all sent texts" page here - the office
+tablets run in kiosk mode with no way back to a different page, and the
+real, authoritative send history already lives in `tby-texting-system`
+itself: every send is a genuine campaign there (`message_campaigns`, not
+just an SMS API call), named recognizably (e.g. "TBY Red: Bus Left" - see
+`sendBusNotice()`'s `label`) so staff can look it up in that app's own
+`/campaigns` or `/broadcasts` pages, with real delivery status per
+recipient.
 
 Neither the picker nor the send itself resolves parent phone numbers - it
 calls the `tby-texting-system` app's
