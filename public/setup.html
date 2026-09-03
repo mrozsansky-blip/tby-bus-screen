@@ -80,7 +80,8 @@
       <p style="margin-top:0;">
         These are the message choices office staff pick from when they click "Text Parents" on a
         dismissal screen. Use <code>{name}</code> for the route's display name and
-        <code>{time}</code> for the time the button is clicked.
+        <code>{time}</code> for the time the bus actually departed (falls back to the current time
+        if it hasn't departed yet, e.g. for a "not here yet" message).
       </p>
       <table id="templateTable" class="group-table" hidden>
         <thead>

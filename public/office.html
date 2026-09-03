@@ -378,7 +378,7 @@
         try {
           const preview = await api(`/api/office/route/${recordId}/notify/preview`, {
             method: 'POST',
-            body: JSON.stringify({ templateId }),
+            body: JSON.stringify({ templateId, screen: currentScreen }),
           });
           const groupSuffix = preview.groupName ? ` (texting group "${preview.groupName}")` : '';
           if (!preview.count) {
