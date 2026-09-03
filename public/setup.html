@@ -127,7 +127,13 @@
       secret.value = localStorage.getItem('tbyAdminSecret') || '';
       json.value = JSON.stringify(sample, null, 2);
 
-      function show(text) { message.textContent = text; }
+      // The message box sits at the bottom of the page, well below the routes/spots JSON
+      // textarea - without this, saving a template (or anything else above it) looks like it did
+      // nothing at all, because the only feedback renders off-screen.
+      function show(text) {
+        message.textContent = text;
+        message.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
 
       function adminHeaders() {
         localStorage.setItem('tbyAdminSecret', secret.value.trim());
