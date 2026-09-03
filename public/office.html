@@ -47,6 +47,15 @@
       <section id="grid" class="route-grid compact"></section>
     </main>
 
+    <div id="template-modal" class="modal-overlay hidden">
+      <div class="modal-box">
+        <h3 id="template-modal-title">Text Parents</h3>
+        <p class="modal-subtitle" id="template-modal-subtitle"></p>
+        <div id="template-modal-list"></div>
+        <button type="button" class="modal-close-btn" data-modal-close>Cancel</button>
+      </div>
+    </div>
+
     <script>
       const SCREEN_TITLES = {
         morning: 'Morning Bus Arrival',
@@ -136,8 +145,25 @@
       }
 
       function renderNotifyButton(route) {
+        // Morning is waiting for buses to arrive, not dismissing them - no text button there.
+        // Every dismissal screen (including Friday, whose page also lists AM routes reused for
+        // that day's early dismissal) gets the full template picker.
         if (currentScreen === 'morning') return '';
-        return `<button class="mini-btn notify-btn" data-action="notify" data-id="${escapeHtml(route.id)}" data-name="${escapeHtml(route.name)}">Text Parents: Bus Left</button>`;
+        const texted = route.textsSentToday > 0;
+        const button = `<button class="mini-btn notify-btn ${texted ? 'texted' : ''}" data-action="notify" data-id="${escapeHtml(route.id)}" data-name="${escapeHtml(route.name)}">${texted ? 'Text Parents (sent) - Send Another' : 'Text Parents'}</button>`;
+        if (!texted) return button;
+        const countNote = route.textsSentToday > 1 ? ` (+${route.textsSentToday - 1} more today)` : '';
+        const note = `
+          <div class="text-sent-note">
+            ✓ "${escapeHtml(truncate(route.lastTextMessage, 70))}"${route.lastTextRecipientCount ? ` — ${route.lastTextRecipientCount} texted` : ''}${countNote}
+          </div>
+        `;
+        return button + note;
+      }
+
+      function truncate(value, max) {
+        const text = String(value || '');
+        return text.length > max ? `${text.slice(0, max - 1)}…` : text;
       }
 
       function renderRoutes(routes) {
@@ -300,30 +326,81 @@
         }
       }
 
-      async function handleNotify(recordId, routeName) {
+      function openModal(modalEl) { modalEl.classList.remove('hidden'); }
+      function closeModal(modalEl) { modalEl.classList.add('hidden'); }
+
+      async function openTemplatePicker(recordId, routeName) {
+        if (busy) return;
+        const modal = document.getElementById('template-modal');
+        const list = document.getElementById('template-modal-list');
+        document.getElementById('template-modal-title').textContent = `Text Parents: ${routeName}`;
+        document.getElementById('template-modal-subtitle').textContent = 'Choose a message to send.';
+        list.innerHTML = '<p class="modal-subtitle">Loading templates...</p>';
+        openModal(modal);
+        try {
+          const [templatesData, sentData] = await Promise.all([
+            api('/api/office/templates'),
+            api(`/api/office/route/${recordId}/sent-templates-today`),
+          ]);
+          const templates = templatesData.templates || [];
+          if (!templates.length) {
+            list.innerHTML = '<p class="modal-subtitle">No text templates are set up yet. Add one on /setup.html.</p>';
+            return;
+          }
+          const sentAtByTemplateId = new Map((sentData.sent || []).map((entry) => [entry.templateId, entry.sentAt]));
+          list.innerHTML = templates.map((template) => {
+            const sentAt = sentAtByTemplateId.get(template.id);
+            const warning = sentAt ? `<div class="template-already-sent">⚠ Already sent to this bus today at ${formatTime(sentAt)}</div>` : '';
+            return `
+              <button type="button" class="template-option" data-action="pick-template" data-id="${escapeHtml(recordId)}" data-name="${escapeHtml(routeName)}" data-template-id="${escapeHtml(template.id)}" data-template-name="${escapeHtml(template.name)}" data-already-sent="${sentAt ? '1' : ''}">
+                <div class="template-name">${escapeHtml(template.name)}</div>
+                <div class="template-preview">${escapeHtml(renderPreviewText(template.body, routeName))}</div>
+                ${warning}
+              </button>
+            `;
+          }).join('');
+        } catch (error) {
+          list.innerHTML = `<p class="modal-subtitle">${escapeHtml(error.message)}</p>`;
+        }
+      }
+
+      // Client-side approximation just for the picker preview text - the server renders the exact
+      // message (with the real send-time timestamp) in the confirm dialog before anything sends.
+      function renderPreviewText(body, routeName) {
+        return String(body || '').replace(/\{name\}/g, routeName).replace(/\{time\}/g, 'now');
+      }
+
+      async function sendWithTemplate(recordId, routeName, templateId, templateName, alreadySent) {
         if (busy) return;
         busy = true;
+        closeModal(document.getElementById('template-modal'));
         try {
-          const preview = await api(`/api/office/route/${recordId}/notify-departure/preview`, { method: 'POST', body: JSON.stringify({}) });
+          const preview = await api(`/api/office/route/${recordId}/notify/preview`, {
+            method: 'POST',
+            body: JSON.stringify({ templateId }),
+          });
           const groupSuffix = preview.groupName ? ` (texting group "${preview.groupName}")` : '';
           if (!preview.count) {
             showMessage(`No text-able parent numbers found for ${routeName}${groupSuffix}.`, 'error');
             return;
           }
+          const dupWarning = alreadySent === '1' ? `⚠ "${templateName}" was already sent to this bus today. Send it again?\n\n` : '';
           const confirmed = window.confirm(
+            dupWarning +
             `Text ${preview.count} parent(s) on the ${routeName} bus${groupSuffix}?\n\n"${preview.message}"` +
             (preview.sandbox ? '\n\n(Sandbox mode: no real texts will be sent.)' : '')
           );
           if (!confirmed) return;
-          const result = await api(`/api/office/route/${recordId}/notify-departure/send`, {
+          const result = await api(`/api/office/route/${recordId}/notify/send`, {
             method: 'POST',
-            body: JSON.stringify({ message: preview.message, confirmationToken: preview.confirmationToken }),
+            body: JSON.stringify({ screen: currentScreen, templateId: preview.templateId, message: preview.message, confirmationToken: preview.confirmationToken }),
           });
           if (result.sandbox) {
             showMessage(`Sandbox mode: would have texted ${result.texted} parent(s). No real texts were sent.`, 'info');
           } else {
             showMessage(`Texted ${result.texted} parent(s)${result.failed ? `, ${result.failed} failed` : ''}.`, 'success');
           }
+          await loadOffice(true);
         } catch (error) {
           showMessage(error.message, 'error');
         } finally {
@@ -363,7 +440,7 @@
         }
         const notifyTarget = event.target.closest('button[data-action="notify"]');
         if (notifyTarget) {
-          handleNotify(notifyTarget.dataset.id, notifyTarget.dataset.name);
+          openTemplatePicker(notifyTarget.dataset.id, notifyTarget.dataset.name);
         }
       });
 
@@ -371,6 +448,18 @@
         const target = event.target.closest('select[data-action="spot"]');
         if (!target) return;
         handleSpot(target.dataset.id, target.value);
+      });
+
+      document.getElementById('template-modal-list').addEventListener('click', (event) => {
+        const target = event.target.closest('button[data-action="pick-template"]');
+        if (!target) return;
+        sendWithTemplate(target.dataset.id, target.dataset.name, target.dataset.templateId, target.dataset.templateName, target.dataset.alreadySent);
+      });
+
+      document.querySelectorAll('.modal-overlay').forEach((overlay) => {
+        overlay.addEventListener('click', (event) => {
+          if (event.target === overlay || event.target.closest('[data-modal-close]')) closeModal(overlay);
+        });
       });
 
       window.addEventListener('beforeunload', () => {

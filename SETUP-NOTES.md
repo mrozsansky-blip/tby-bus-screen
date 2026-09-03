@@ -44,10 +44,54 @@ when this was set up:
 Parking spots have no Airtable table at all — they're entered once via
 `/setup.html`'s JSON import.
 
-# "Text Parents: Bus Left" recipients
+# "Text Parents" notices
 
-The office dismissal screens' "Text Parents: Bus Left" button does **not**
-resolve parent phone numbers itself. It calls the `tby-texting-system` app's
+Clicking "Text Parents" on a route (every dismissal screen - from-school,
+PRI, Friday; **not** shown on `/office/morning`, which is waiting for buses
+to arrive rather than dismissing them) opens a picker of message templates
+and sends whichever one staff choose. There's no fixed set of messages in
+code - templates are rows in the `text_templates` table, managed on
+`/setup.html`'s "Text templates" section (add/edit/delete, an active
+checkbox to hide one from the picker without losing it). A template's
+`body` can reference `{name}` (the route's `display_name` - a bus color for
+PM routes, a route code like `TBY1` for AM routes) and `{time}` (formatted
+in `SCHOOL_TIME_ZONE` at the moment staff click the template - frozen into
+the message right there via `renderTemplate()`, so what's shown in the
+confirm dialog is exactly what sends). Two templates seed automatically the
+first time the app runs (`seedDefaultTextTemplates()`, a one-time check —
+deleting them on purpose doesn't bring them back):
+
+- **Bus Left**: `TBY {name}: {name} left school at {time}.`
+- **Not Here Yet**: `TBY {name}: Your bus has not yet arrived at school. We
+  will text you when it departs.` For a delayed dismissal bus that hasn't
+  shown up at school yet to pick up students.
+
+`previewBusNotice()`/`sendBusNotice()` (behind `GET /api/office/templates`
+for the picker list and `/api/office/route/:id/notify/preview` +
+`/notify/send`) take a `templateId` instead of a fixed message. Every actual
+send (not preview) is logged to `text_log` - service date, screen, route,
+template name, the exact rendered message, and recipient/failure counts.
+That log backs two on-page things only: the button turns green ("texted")
+once any template has been sent to that route today (with a note showing
+the last message and recipient count), and the template picker warns
+("⚠ Already sent to this bus today at ...") if the *same* template was
+already sent today for that route, via `GET
+/api/office/route/:id/sent-templates-today` - a duplicate-send guard, not a
+history browser. Editing or deleting a template never affects past
+`text_log` rows, since the log copies the rendered name and message in
+directly rather than referencing the template row.
+
+There's deliberately no "view all sent texts" page here - the office
+tablets run in kiosk mode with no way back to a different page, and the
+real, authoritative send history already lives in `tby-texting-system`
+itself: every send is a genuine campaign there (`message_campaigns`, not
+just an SMS API call), named recognizably (e.g. "TBY Red: Bus Left" - see
+`sendBusNotice()`'s `label`) so staff can look it up in that app's own
+`/campaigns` or `/broadcasts` pages, with real delivery status per
+recipient.
+
+Neither the picker nor the send itself resolves parent phone numbers - it
+calls the `tby-texting-system` app's
 `/api/mcp` endpoint (`TEXTING_SYSTEM_URL` / `TEXTING_MCP_AUTH_TOKEN`) and
 asks it to text that route's assigned families. Who a route targets is
 resolved in `busDepartureRouteInfo()`, in this order:

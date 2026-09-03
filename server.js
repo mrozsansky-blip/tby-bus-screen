@@ -126,15 +126,47 @@ async function createSchema() {
       value TEXT,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     )`,
+    // Editable "Text Parents" message templates, managed on /setup.html. body may reference
+    // {name} (the route's display_name) and {time} (formatted at send time), substituted in
+    // renderTemplate().
+    `CREATE TABLE IF NOT EXISTS text_templates (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      body TEXT NOT NULL,
+      sort_order INTEGER NOT NULL DEFAULT 9999,
+      active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`,
+    // One row per actual send (not preview) - the rendered message and counts are copied in
+    // directly so this stays a true record even if the template is later edited or deleted.
+    // Backs both the "already texted today" button state and the per-route send history.
+    `CREATE TABLE IF NOT EXISTS text_log (
+      id TEXT PRIMARY KEY,
+      service_date TEXT NOT NULL,
+      screen TEXT NOT NULL,
+      route_id TEXT NOT NULL,
+      template_id TEXT,
+      template_name TEXT,
+      message TEXT NOT NULL,
+      recipient_count INTEGER NOT NULL DEFAULT 0,
+      failed_count INTEGER NOT NULL DEFAULT 0,
+      sandbox INTEGER NOT NULL DEFAULT 0,
+      sent_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY(route_id) REFERENCES routes(id)
+    )`,
     `CREATE INDEX IF NOT EXISTS idx_routes_screen ON routes(workflow_type, use_friday, active, sort_order)`,
     `CREATE INDEX IF NOT EXISTS idx_daily_status_lookup ON daily_status(service_date, screen, route_id)`,
     `CREATE INDEX IF NOT EXISTS idx_event_log_export ON event_log(exported_at, service_date)`,
-    `CREATE INDEX IF NOT EXISTS idx_daily_status_export ON daily_status(exported_at, service_date)`
+    `CREATE INDEX IF NOT EXISTS idx_daily_status_export ON daily_status(exported_at, service_date)`,
+    `CREATE INDEX IF NOT EXISTS idx_text_log_route_date ON text_log(route_id, service_date)`
   ];
 
   for (const statement of statements) {
     await run(statement);
   }
+
+  await seedDefaultTextTemplates();
 
   // routes.texting_group_name was added after this table already existed in production, where
   // CREATE TABLE IF NOT EXISTS above is a no-op - ALTER TABLE picks up existing deployments.
@@ -144,6 +176,27 @@ async function createSchema() {
   } catch (error) {
     if (!/duplicate column/i.test(String(error?.message || ''))) throw error;
   }
+}
+
+// Only runs once - if any template already exists (including one staff has since deleted down to
+// zero on purpose), this is a no-op, so it never resurrects a deleted default.
+async function seedDefaultTextTemplates() {
+  const existing = await run(`SELECT COUNT(*) AS c FROM text_templates`);
+  if (Number(existing.rows[0]?.c || 0) > 0) return;
+  const defaults = [
+    { id: 'bus-left', name: 'Bus Left', body: 'TBY {name}: {name} left school at {time}.', sortOrder: 1 },
+    { id: 'not-here-yet', name: 'Not Here Yet', body: 'TBY {name}: Your bus has not yet arrived at school. We will text you when it departs.', sortOrder: 2 },
+  ];
+  for (const template of defaults) {
+    await run(`INSERT INTO text_templates (id, name, body, sort_order, active) VALUES (?, ?, ?, ?, 1)`, [template.id, template.name, template.body, template.sortOrder]);
+  }
+}
+
+// Substitutes {name} and {time} (and any other {word} key present in vars) into a template body.
+// An unrecognized {token} is left as-is rather than silently dropped, so a typo in the template
+// editor is visible in the preview instead of vanishing.
+function renderTemplate(body, vars) {
+  return String(body || '').replace(/\{(\w+)\}/g, (match, key) => (key in vars ? vars[key] : match));
 }
 
 function requireConfiguredSecret(secretValue, name, res) {
@@ -364,7 +417,7 @@ async function ensureDailyStatus(routeId, screen, serviceDate = toSchoolDateStri
   return id;
 }
 
-function mapRouteRow(row, office = false) {
+function mapRouteRow(row, office = false, textSummary = null) {
   return {
     id: row.route_id,
     name: row.display_name || row.route_code || 'Bus',
@@ -377,6 +430,9 @@ function mapRouteRow(row, office = false) {
     lastDeparture: row.departure_time || '',
     lastEvent: row.last_event_time || '',
     morningArrived: office ? row.current_status === 'Arrived' : undefined,
+    textsSentToday: office ? (textSummary?.textsSentToday || 0) : undefined,
+    lastTextMessage: office ? (textSummary?.lastMessage || '') : undefined,
+    lastTextRecipientCount: office ? (textSummary?.lastRecipientCount || 0) : undefined,
   };
 }
 
@@ -385,6 +441,31 @@ async function listSpots() {
     `SELECT id, name FROM parking_spots WHERE active = 1 ORDER BY sort_order ASC, name COLLATE NOCASE ASC`
   );
   return result.rows.map((row) => ({ id: row.id, name: row.name }));
+}
+
+// Today's send history per route, for the office grid's "already texted" button state. One query
+// using ROW_NUMBER() picks out just the latest send per route while COUNT() OVER still reports the
+// total for the day, so a route texted more than once still shows an accurate count.
+async function fetchTextSummaryByRoute(routeIds, serviceDate) {
+  const summaryByRoute = new Map();
+  if (!routeIds.length) return summaryByRoute;
+  const placeholders = routeIds.map(() => '?').join(',');
+  const result = await run(
+    `SELECT route_id, message, recipient_count,
+       COUNT(*) OVER (PARTITION BY route_id) AS texts_sent,
+       ROW_NUMBER() OVER (PARTITION BY route_id ORDER BY sent_at DESC) AS rn
+     FROM text_log WHERE service_date = ? AND route_id IN (${placeholders})`,
+    [serviceDate, ...routeIds]
+  );
+  for (const row of result.rows) {
+    if (Number(row.rn) !== 1) continue;
+    summaryByRoute.set(row.route_id, {
+      textsSentToday: Number(row.texts_sent || 0),
+      lastMessage: row.message || '',
+      lastRecipientCount: Number(row.recipient_count || 0),
+    });
+  }
+  return summaryByRoute;
 }
 
 async function fetchRoutesForScreen(screen, options = {}) {
@@ -437,7 +518,14 @@ async function fetchRoutesForScreen(screen, options = {}) {
     }
     spots.forEach((spot) => { spot.takenByRouteId = occupiedBy.get(spot.id) || null; });
   }
-  return { screen: resolvedScreen, routes: result.rows.map((row) => mapRouteRow(row, options.office)), spots };
+  const textSummaryByRoute = options.office
+    ? await fetchTextSummaryByRoute(result.rows.map((row) => row.route_id), serviceDate)
+    : new Map();
+  return {
+    screen: resolvedScreen,
+    routes: result.rows.map((row) => mapRouteRow(row, options.office, textSummaryByRoute.get(row.route_id))),
+    spots,
+  };
 }
 
 async function fetchStatus(routeId, screen) {
@@ -720,8 +808,16 @@ async function syncRoutesFromAirtable() {
   return { ok: true, importedRoutes: result.importedRoutes, flagged };
 }
 
-function busDepartureMessage(displayName) {
-  return `The ${displayName} bus has left. — Tiferes Bais Yaakov`;
+function formatSchoolTime(date = new Date()) {
+  return new Intl.DateTimeFormat('en-US', { timeZone: SCHOOL_TIME_ZONE, hour: 'numeric', minute: '2-digit', hour12: true }).format(date);
+}
+
+async function getActiveTextTemplate(templateId) {
+  if (!templateId) throw new Error('templateId is required.');
+  const row = await run(`SELECT id, name, body FROM text_templates WHERE id = ? AND active = 1`, [templateId]);
+  const template = row.rows[0];
+  if (!template) throw new Error('That text template was not found (it may have been deleted or turned off).');
+  return template;
 }
 
 async function textgridMcpCall(name, args) {
@@ -757,22 +853,66 @@ async function busDepartureRouteInfo(routeId) {
   return { displayName, routeCode, groupName, airtableRecordId };
 }
 
-async function previewBusDeparture(routeId) {
-  const { displayName, routeCode, groupName, airtableRecordId } = await busDepartureRouteInfo(routeId);
-  const message = busDepartureMessage(displayName);
+async function previewBusNotice(routeId, templateId) {
+  const [{ displayName, routeCode, groupName, airtableRecordId }, template] = await Promise.all([
+    busDepartureRouteInfo(routeId),
+    getActiveTextTemplate(templateId),
+  ]);
+  const message = renderTemplate(template.body, { name: displayName, time: formatSchoolTime() });
   const result = groupName
     ? await textgridMcpCall('preview_group_sms_send', { message, groupName })
     : await textgridMcpCall('preview_bus_route_sms_send', { message, airtableRecordId });
   const target = result.busRouteLabel || result.groupName || groupName;
-  return { message, routeCode, groupName: target, count: result.uniqueValidRecipients, confirmationToken: result.confirmationToken, expiresInSeconds: result.expiresInSeconds, sandbox: result.sandboxMode };
+  return {
+    message,
+    templateId: template.id,
+    templateName: template.name,
+    routeCode,
+    groupName: target,
+    count: result.uniqueValidRecipients,
+    confirmationToken: result.confirmationToken,
+    expiresInSeconds: result.expiresInSeconds,
+    sandbox: result.sandboxMode,
+  };
 }
 
-async function sendBusDeparture(routeId, message, confirmationToken) {
-  const { groupName, airtableRecordId } = await busDepartureRouteInfo(routeId);
+async function sendBusNotice(routeId, screen, templateId, message, confirmationToken) {
+  const { displayName, groupName, airtableRecordId } = await busDepartureRouteInfo(routeId);
   if (!confirmationToken) throw new Error('Missing confirmationToken from the preview step.');
+
+  const templateRow = templateId ? await run(`SELECT name FROM text_templates WHERE id = ?`, [templateId]) : null;
+  const templateName = templateRow?.rows[0]?.name || null;
+  // Gives this send a recognizable name in the texting app's own /campaigns and /broadcasts (e.g.
+  // "TBY Red: Bus Left") instead of a bare timestamp, so staff can confirm from there that a
+  // specific text actually went out - that's the real send history; this app only tracks enough
+  // to drive the "already texted" button state (see fetchTextSummaryByRoute/sentTemplateIdsToday).
+  const label = `TBY ${displayName}${templateName ? `: ${templateName}` : ''}`;
+
   const result = groupName
-    ? await textgridMcpCall('send_group_sms', { message, groupName, confirmationToken })
-    : await textgridMcpCall('send_bus_route_sms', { message, airtableRecordId, confirmationToken });
+    ? await textgridMcpCall('send_group_sms', { message, groupName, confirmationToken, label })
+    : await textgridMcpCall('send_bus_route_sms', { message, airtableRecordId, confirmationToken, label });
+
+  await run(
+    `INSERT INTO text_log (id, service_date, screen, route_id, template_id, template_name, message, recipient_count, failed_count, sandbox, sent_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      randomUUID(),
+      toSchoolDateString(),
+      screen || '',
+      routeId,
+      templateId || null,
+      templateName,
+      message,
+      result.successful?.length || 0,
+      result.failed?.length || 0,
+      result.sandboxMode ? 1 : 0,
+      // Explicit ISO timestamp (not SQLite's CURRENT_TIMESTAMP, which is space-separated with no
+      // "Z") so the client's `new Date(...)` parses it reliably, matching every other timestamp
+      // this app stores (arrival_time, departure_time, etc).
+      new Date().toISOString(),
+    ]
+  );
+
   return { texted: result.successful?.length || 0, failed: result.failed?.length || 0, sandbox: result.sandboxMode };
 }
 
@@ -982,20 +1122,63 @@ app.post('/api/office/route/:recordId/next', async (req, res) => {
   }
 });
 
-app.post('/api/office/route/:recordId/notify-departure/preview', async (req, res) => {
+// Office-facing template list for the "Text Parents" picker - active templates only, no admin
+// secret required since this is what office staff use to choose what to send.
+app.get('/api/office/templates', async (req, res) => {
   if (!validateOfficePin(req, res)) return;
   try {
-    res.json(await previewBusDeparture(req.params.recordId));
+    await ensureSchema();
+    const result = await run(`SELECT id, name, body FROM text_templates WHERE active = 1 ORDER BY sort_order ASC, name COLLATE NOCASE ASC`);
+    res.json({ templates: result.rows });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: error.message });
   }
 });
 
-app.post('/api/office/route/:recordId/notify-departure/send', async (req, res) => {
+app.post('/api/office/route/:recordId/notify/preview', async (req, res) => {
   if (!validateOfficePin(req, res)) return;
   try {
-    res.json(await sendBusDeparture(req.params.recordId, req.body?.message || '', req.body?.confirmationToken || ''));
+    res.json(await previewBusNotice(req.params.recordId, req.body?.templateId || ''));
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/office/route/:recordId/notify/send', async (req, res) => {
+  if (!validateOfficePin(req, res)) return;
+  try {
+    res.json(await sendBusNotice(
+      req.params.recordId,
+      req.body?.screen || '',
+      req.body?.templateId || '',
+      req.body?.message || '',
+      req.body?.confirmationToken || ''
+    ));
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Which templates have already been sent to this route today - just enough for the picker's
+// duplicate-send warning ("Bus Left was already sent at 3:52 PM - send again?"). The full send
+// history lives in the texting app's own /campaigns and /broadcasts (each send is labeled with
+// the route and template, see sendBusNotice) - these kiosk tablets have no way back to a page like
+// that, so this app doesn't try to duplicate it.
+app.get('/api/office/route/:recordId/sent-templates-today', async (req, res) => {
+  if (!validateOfficePin(req, res)) return;
+  try {
+    await ensureSchema();
+    const serviceDate = toSchoolDateString();
+    const result = await run(
+      `SELECT template_id, MAX(sent_at) AS sent_at FROM text_log
+       WHERE route_id = ? AND service_date = ? AND template_id IS NOT NULL
+       GROUP BY template_id`,
+      [req.params.recordId, serviceDate]
+    );
+    res.json({ sent: result.rows.map((row) => ({ templateId: row.template_id, sentAt: row.sent_at })) });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: error.message });
@@ -1065,6 +1248,56 @@ app.post('/api/admin/route/:id/texting-group', async (req, res) => {
     const result = await run(`UPDATE routes SET texting_group_name = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, [groupName || null, req.params.id]);
     if (!result.rowsAffected) return res.status(404).json({ error: 'Route not found.' });
     res.json({ ok: true, id: req.params.id, textingGroupName: groupName || null });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/admin/templates', async (req, res) => {
+  if (!validateAdminSecret(req, res)) return;
+  try {
+    await ensureSchema();
+    const result = await run(`SELECT * FROM text_templates ORDER BY sort_order ASC, name COLLATE NOCASE ASC`);
+    res.json({ templates: result.rows });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Single save endpoint for both add and edit: pass an existing id to update that template in
+// place, omit it to create a new one. Templates aren't foreign-keyed from text_log (which copies
+// the rendered name/message in directly), so editing or deleting one never touches past history.
+app.post('/api/admin/templates', async (req, res) => {
+  if (!validateAdminSecret(req, res)) return;
+  try {
+    await ensureSchema();
+    const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
+    const body = typeof req.body?.body === 'string' ? req.body.body.trim() : '';
+    if (!name) throw new Error('name is required.');
+    if (!body) throw new Error('body is required.');
+    const sortOrder = Number.isFinite(Number(req.body?.sortOrder)) ? Number(req.body.sortOrder) : 9999;
+    const active = toBoolInt(req.body?.active, true);
+    const id = typeof req.body?.id === 'string' && req.body.id.trim() ? req.body.id.trim() : `tpl_${randomUUID()}`;
+    await run(
+      `INSERT INTO text_templates (id, name, body, sort_order, active, updated_at) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+       ON CONFLICT(id) DO UPDATE SET name = excluded.name, body = excluded.body, sort_order = excluded.sort_order, active = excluded.active, updated_at = CURRENT_TIMESTAMP`,
+      [id, name, body, sortOrder, active]
+    );
+    res.json({ ok: true, id });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.delete('/api/admin/templates/:id', async (req, res) => {
+  if (!validateAdminSecret(req, res)) return;
+  try {
+    await ensureSchema();
+    await run(`DELETE FROM text_templates WHERE id = ?`, [req.params.id]);
+    res.json({ ok: true });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: error.message });
