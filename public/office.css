@@ -103,11 +103,17 @@ h1 {
   box-shadow: 0 4px 12px rgba(17, 24, 39, 0.08);
 }
 
-.route-card.arrived { border-color: var(--green); }
-.route-card.loading { background: #eff6ff; border-color: var(--blue); }
-.route-card.departed { background: #e5e7eb; border-color: #6b7280; opacity: 0.9; }
+.route-card.arrived { background: var(--blue); border-color: #1d4ed8; color: #fff; }
+.route-card.loading { background: var(--green); border-color: #15803d; color: #fff; }
+.route-card.departed { background: var(--red); border-color: #b91c1c; color: #fff; }
 .route-card.delayed { border-color: var(--orange); }
 .route-card.cancelled { border-color: var(--red); }
+
+.route-card.arrived .spot-row span,
+.route-card.loading .spot-row span,
+.route-card.departed .spot-row span {
+  color: rgba(255, 255, 255, 0.85);
+}
 
 .card-top {
   display: flex;
@@ -141,9 +147,9 @@ h1 {
   text-transform: uppercase;
 }
 
-.arrived .status-pill { background: #dcfce7; color: #14532d; }
-.loading .status-pill { background: #bfdbfe; color: #1e3a8a; }
-.departed .status-pill { background: #d1d5db; color: #374151; }
+.arrived .status-pill { background: #fff; color: #1d4ed8; }
+.loading .status-pill { background: #fff; color: #15803d; }
+.departed .status-pill { background: #fff; color: #b91c1c; }
 
 .spot-row {
   display: grid;
