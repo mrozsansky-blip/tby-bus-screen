@@ -259,7 +259,8 @@
             method: 'POST',
             body: JSON.stringify({ screen: currentScreen, status, spotId, note: 'Office status button' }),
           });
-          showMessage(`Changed to ${status}.`, 'success');
+          // No success banner here on purpose - it was popping in/out on every status
+          // click and shoving the grid down. Errors still surface below, in the catch.
           await loadOffice(true);
         } catch (error) {
           showMessage(error.message, 'error');
