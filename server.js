@@ -388,6 +388,25 @@ async function validateSpot(spotId) {
   return result.rows[0];
 }
 
+// Once a bus has claimed a parking spot for a given screen/day, no other bus on that same
+// screen may be assigned to it until it's freed (status set back to Waiting/Departed clears
+// parking_spot_id - see setRouteStatus). Enforced server-side so the office API rejects a
+// conflicting assignment even if a client bypasses the dropdown filtering.
+async function assertSpotAvailable(spotId, screen, routeId, serviceDate) {
+  if (!spotId) return;
+  const result = await run(
+    `SELECT routes.display_name FROM daily_status
+     JOIN routes ON routes.id = daily_status.route_id
+     WHERE daily_status.service_date = ? AND daily_status.screen = ?
+       AND daily_status.parking_spot_id = ? AND daily_status.route_id != ?
+     LIMIT 1`,
+    [serviceDate, screen, spotId, routeId]
+  );
+  if (result.rows.length) {
+    throw new Error(`That parking spot is already taken by ${result.rows[0].display_name || 'another bus'}.`);
+  }
+}
+
 async function ensureDailyStatus(routeId, screen, serviceDate = toSchoolDateString()) {
   const id = dailyStatusId(serviceDate, screen, routeId);
   await run(
@@ -490,6 +509,15 @@ async function fetchRoutesForScreen(screen, options = {}) {
   );
 
   const spots = options.office ? await listSpots() : [];
+  if (options.office && spots.length) {
+    // Mark each spot with which route currently occupies it (if any) on this screen/day, so the
+    // office UI can hide it as a choice for every other bus until that bus frees it.
+    const occupiedBy = new Map();
+    for (const row of result.rows) {
+      if (row.parking_spot_id) occupiedBy.set(row.parking_spot_id, row.route_id);
+    }
+    spots.forEach((spot) => { spot.takenByRouteId = occupiedBy.get(spot.id) || null; });
+  }
   const textSummaryByRoute = options.office
     ? await fetchTextSummaryByRoute(result.rows.map((row) => row.route_id), serviceDate)
     : new Map();
@@ -557,6 +585,10 @@ async function setRouteStatus({ routeId, screen, status, spotId, note }) {
     update.parkingSpotId = '';
   }
 
+  if (update.parkingSpotId && update.parkingSpotId !== current.parking_spot_id) {
+    await assertSpotAvailable(update.parkingSpotId, resolvedScreen, routeId, toSchoolDateString(now));
+  }
+
   await run(
     `UPDATE daily_status
      SET current_status = ?, parking_spot_id = NULLIF(?, ''), arrival_time = NULLIF(?, ''),
@@ -586,7 +618,9 @@ async function setRouteSpot(routeId, screen, spotId) {
   await validateRouteForScreen(routeId, resolvedScreen);
   await validateSpot(spotId || '');
   const now = new Date();
-  await ensureDailyStatus(routeId, resolvedScreen, toSchoolDateString(now));
+  const serviceDate = toSchoolDateString(now);
+  if (spotId) await assertSpotAvailable(spotId, resolvedScreen, routeId, serviceDate);
+  await ensureDailyStatus(routeId, resolvedScreen, serviceDate);
   await run(
     `UPDATE daily_status
      SET parking_spot_id = NULLIF(?, ''), last_event_time = ?, updated_at = CURRENT_TIMESTAMP, exported_at = NULL

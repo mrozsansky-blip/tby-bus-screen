@@ -122,8 +122,11 @@
 
       function renderSpotSelect(route) {
         if (currentScreen === 'morning') return '';
+        // A spot already claimed by another bus isn't offered as a choice here - only this
+        // route's own current spot (if any) and spots nobody else has taken show up.
+        const available = currentSpots.filter((spot) => !spot.takenByRouteId || spot.takenByRouteId === route.id);
         const options = ['<option value="">No spot</option>']
-          .concat(currentSpots.map((spot) => `<option value="${escapeHtml(spot.id)}" ${spot.id === route.spotId ? 'selected' : ''}>${escapeHtml(spot.name)}</option>`))
+          .concat(available.map((spot) => `<option value="${escapeHtml(spot.id)}" ${spot.id === route.spotId ? 'selected' : ''}>${escapeHtml(spot.name)}</option>`))
           .join('');
         return `
           <label class="spot-row compact-spot">

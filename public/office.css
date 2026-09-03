@@ -104,8 +104,8 @@ h1 {
 }
 
 .route-card.arrived { border-color: var(--green); }
-.route-card.loading { border-color: var(--blue); }
-.route-card.departed { border-color: #6b7280; opacity: 0.82; }
+.route-card.loading { background: #eff6ff; border-color: var(--blue); }
+.route-card.departed { background: #e5e7eb; border-color: #6b7280; opacity: 0.9; }
 .route-card.delayed { border-color: var(--orange); }
 .route-card.cancelled { border-color: var(--red); }
 
@@ -142,8 +142,8 @@ h1 {
 }
 
 .arrived .status-pill { background: #dcfce7; color: #14532d; }
-.loading .status-pill { background: #dbeafe; color: #1e3a8a; }
-.departed .status-pill { background: #e5e7eb; color: #374151; }
+.loading .status-pill { background: #bfdbfe; color: #1e3a8a; }
+.departed .status-pill { background: #d1d5db; color: #374151; }
 
 .spot-row {
   display: grid;
