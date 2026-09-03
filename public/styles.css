@@ -125,27 +125,33 @@ body {
 }
 
 .arrived {
-  background: #ffe45c;
+  background: #2563eb;
+  color: var(--white);
 }
 
 .loading {
-  background: #7dd3fc;
+  background: #16a34a;
+  color: var(--white);
 }
 
 .ready {
-  background: #86efac;
+  background: #0d9488;
+  color: var(--white);
 }
 
 .departed {
-  background: #c7c7c7;
+  background: #dc2626;
+  color: var(--white);
 }
 
 .delayed {
-  background: #fb923c;
+  background: #7c3aed;
+  color: var(--white);
 }
 
 .cancelled {
-  background: #f87171;
+  background: #7f1d1d;
+  color: var(--white);
 }
 
 .arrived .bus-status,
