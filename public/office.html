@@ -302,7 +302,8 @@
             body: JSON.stringify({ screen }),
           });
           renderOverride(data);
-          showMessage(screen === 'auto' ? 'Public screen back to Auto.' : `Public screen overridden to ${SCREEN_TITLES[screen] || screen}.`, 'success');
+          // The override bar itself (active button + label) already shows the new state -
+          // no banner needed. Errors still surface below, in the catch.
         } catch (error) {
           showMessage(error.message, 'error');
         } finally {
@@ -318,7 +319,7 @@
             method: 'POST',
             body: JSON.stringify({ screen: currentScreen, spotId }),
           });
-          showMessage('Spot updated.', 'success');
+          // The grid reload below shows the new spot on the card - no banner needed.
           await loadOffice(true);
         } catch (error) {
           showMessage(error.message, 'error');
@@ -396,10 +397,11 @@
             method: 'POST',
             body: JSON.stringify({ screen: currentScreen, templateId: preview.templateId, message: preview.message, confirmationToken: preview.confirmationToken }),
           });
-          if (result.sandbox) {
-            showMessage(`Sandbox mode: would have texted ${result.texted} parent(s). No real texts were sent.`, 'info');
-          } else {
-            showMessage(`Texted ${result.texted} parent(s)${result.failed ? `, ${result.failed} failed` : ''}.`, 'success');
+          // Sandbox mode is already called out in the confirm dialog above, and a clean send
+          // needs no banner - the "texted" note on the card (renderNotifyButton) covers it.
+          // A partial failure is still worth flagging.
+          if (result.failed) {
+            showMessage(`${result.failed} of ${result.texted + result.failed} text(s) failed to send.`, 'error');
           }
           await loadOffice(true);
         } catch (error) {
