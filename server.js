@@ -1075,6 +1075,22 @@ app.post('/api/office/screen-override', async (req, res) => {
   }
 });
 
+// Office-facing template list for the "Text Parents" picker - active templates only, no admin
+// secret required since this is what office staff use to choose what to send. Registered before
+// the /:screen catch-all below - Express matches routes in registration order, and "templates"
+// would otherwise match that single-segment param route first and 404 as "Unknown office screen".
+app.get('/api/office/templates', async (req, res) => {
+  if (!validateOfficePin(req, res)) return;
+  try {
+    await ensureSchema();
+    const result = await run(`SELECT id, name, body FROM text_templates WHERE active = 1 ORDER BY sort_order ASC, name COLLATE NOCASE ASC`);
+    res.json({ templates: result.rows });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.get('/api/office/:screen', async (req, res) => {
   if (!validateOfficePin(req, res)) return;
   const screen = req.params.screen;
@@ -1132,20 +1148,6 @@ app.post('/api/office/route/:recordId/next', async (req, res) => {
       note: req.body?.note || '',
     });
     res.json({ ...result, from: current?.current_status || 'Waiting', to: targetStatus });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Office-facing template list for the "Text Parents" picker - active templates only, no admin
-// secret required since this is what office staff use to choose what to send.
-app.get('/api/office/templates', async (req, res) => {
-  if (!validateOfficePin(req, res)) return;
-  try {
-    await ensureSchema();
-    const result = await run(`SELECT id, name, body FROM text_templates WHERE active = 1 ORDER BY sort_order ASC, name COLLATE NOCASE ASC`);
-    res.json({ templates: result.rows });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: error.message });
