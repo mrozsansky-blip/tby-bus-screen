@@ -172,6 +172,11 @@ Three unrelated `/office/*` bugs, fixed together:
   instead of `STATUS_ORDER` when `currentScreen === 'morning'`, and
   `setRouteStatus()` rejects any other status server-side for that screen
   (so a stale cached page, or a direct API call, can't set one either).
+- **Marking a dismissal bus Arrived no longer requires a parking spot
+  first.** `setRouteStatus()` used to throw ("Choose a parking spot before
+  marking this bus arrived.") unless a spot was already picked - staff can
+  now mark Arrived right away and assign the spot after, via the same spot
+  dropdown (`setRouteSpot()`, unaffected by status).
 
 # Custom text messages
 

@@ -562,10 +562,6 @@ async function setRouteStatus({ routeId, screen, status, spotId, note }) {
   const current = await fetchStatus(routeId, resolvedScreen);
   if (!current) throw new Error('Route status not found.');
 
-  if (resolvedScreen !== 'morning' && status === 'Arrived' && !spotId && !current.parking_spot_id) {
-    throw new Error('Choose a parking spot before marking this bus arrived.');
-  }
-
   const now = new Date();
   const update = {
     currentStatus: status,
