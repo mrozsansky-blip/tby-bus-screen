@@ -54,9 +54,13 @@ code - templates are rows in the `text_templates` table, managed on
 `/setup.html`'s "Text templates" section (add/edit/delete, an active
 checkbox to hide one from the picker without losing it). A template's
 `body` can reference `{name}` (the route's `display_name` - a bus color for
-PM routes, a route code like `TBY1` for AM routes) and `{time}` (formatted
-in `SCHOOL_TIME_ZONE` at the moment staff click the template - frozen into
-the message right there via `renderTemplate()`, so what's shown in the
+PM routes, a route code like `TBY1` for AM routes) and `{time}` (the route's
+recorded `daily_status.departure_time` for that screen/service-date,
+formatted in `SCHOOL_TIME_ZONE` - not the moment staff click the template,
+so it still reads right if the button gets pressed a few minutes late; falls
+back to the current time when the bus hasn't been marked Departed yet, e.g.
+for the "Not Here Yet" template. Resolved in `previewBusNotice()` and frozen
+into the message right there via `renderTemplate()`, so what's shown in the
 confirm dialog is exactly what sends). Two templates seed automatically the
 first time the app runs (`seedDefaultTextTemplates()`, a one-time check —
 deleting them on purpose doesn't bring them back):

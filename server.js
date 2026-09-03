@@ -853,12 +853,28 @@ async function busDepartureRouteInfo(routeId) {
   return { displayName, routeCode, groupName, airtableRecordId };
 }
 
-async function previewBusNotice(routeId, templateId) {
-  const [{ displayName, routeCode, groupName, airtableRecordId }, template] = await Promise.all([
+// {time} should read as when the bus actually left, not when someone happened to press the
+// button - so pull the recorded departure_time for this route/screen/service-date if there is
+// one. Falls back to right now when there isn't (e.g. the "Not Here Yet" template, sent before
+// the bus has departed at all).
+async function routeDepartureTime(routeId, screen) {
+  if (!screen) return '';
+  const resolvedScreen = await normalizeScreen(screen);
+  const row = await run(
+    `SELECT departure_time FROM daily_status WHERE route_id = ? AND screen = ? AND service_date = ?`,
+    [routeId, resolvedScreen, toSchoolDateString()]
+  );
+  return row.rows[0]?.departure_time || '';
+}
+
+async function previewBusNotice(routeId, templateId, screen) {
+  const [{ displayName, routeCode, groupName, airtableRecordId }, template, departureTime] = await Promise.all([
     busDepartureRouteInfo(routeId),
     getActiveTextTemplate(templateId),
+    routeDepartureTime(routeId, screen),
   ]);
-  const message = renderTemplate(template.body, { name: displayName, time: formatSchoolTime() });
+  const time = formatSchoolTime(departureTime ? new Date(departureTime) : new Date());
+  const message = renderTemplate(template.body, { name: displayName, time });
   const result = groupName
     ? await textgridMcpCall('preview_group_sms_send', { message, groupName })
     : await textgridMcpCall('preview_bus_route_sms_send', { message, airtableRecordId });
@@ -1139,7 +1155,7 @@ app.get('/api/office/templates', async (req, res) => {
 app.post('/api/office/route/:recordId/notify/preview', async (req, res) => {
   if (!validateOfficePin(req, res)) return;
   try {
-    res.json(await previewBusNotice(req.params.recordId, req.body?.templateId || ''));
+    res.json(await previewBusNotice(req.params.recordId, req.body?.templateId || '', req.body?.screen || ''));
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: error.message });
