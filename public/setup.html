@@ -25,6 +25,8 @@
       table.group-table th { background: #f9fafb; font-size: 13px; }
       table.group-table select { width: 100%; padding: 8px; border: 1px solid #d1d5db; border-radius: 8px; }
       table.group-table .status { font-size: 12px; color: #6b7280; white-space: nowrap; }
+      .template-form { background: white; border: 1px solid #d1d5db; border-radius: 10px; padding: 14px; margin-top: 10px; }
+      .template-form button.danger { background: #dc2626; }
     </style>
   </head>
   <body>
@@ -68,6 +70,33 @@
         </thead>
         <tbody id="groupTableBody"></tbody>
       </table>
+
+      <div class="sync-row">
+        <div>
+          <label for="loadTemplates" style="margin:0;">Text templates</label>
+          <button id="loadTemplates" class="secondary" type="button">Load templates</button>
+        </div>
+      </div>
+      <p style="margin-top:0;">
+        These are the message choices office staff pick from when they click "Text Parents" on a
+        dismissal screen. Use <code>{name}</code> for the route's display name and
+        <code>{time}</code> for the time the button is clicked.
+      </p>
+      <table id="templateTable" class="group-table" hidden>
+        <thead>
+          <tr><th>Name</th><th>Message</th><th>Active</th><th></th></tr>
+        </thead>
+        <tbody id="templateTableBody"></tbody>
+      </table>
+      <div class="template-form">
+        <input type="hidden" id="templateId" />
+        <label for="templateName" style="margin-top:0;">Template name</label>
+        <input id="templateName" type="text" style="width:100%;" placeholder="e.g. Bus Left" />
+        <label for="templateBody">Message</label>
+        <textarea id="templateBody" style="min-height:80px;" placeholder="TBY {name}: {name} left school at {time}."></textarea>
+        <button id="saveTemplate" type="button">Save Template</button>
+        <button id="cancelTemplateEdit" class="secondary" type="button" hidden>Cancel Edit</button>
+      </div>
 
       <label for="json">Routes and spots JSON</label>
       <textarea id="json"></textarea>
@@ -220,6 +249,144 @@
         }
         groupTable.hidden = routes.length === 0;
       }
+
+      const templateTable = document.getElementById('templateTable');
+      const templateTableBody = document.getElementById('templateTableBody');
+      const templateIdInput = document.getElementById('templateId');
+      const templateNameInput = document.getElementById('templateName');
+      const templateBodyInput = document.getElementById('templateBody');
+      const cancelTemplateEditBtn = document.getElementById('cancelTemplateEdit');
+
+      document.getElementById('loadTemplates').addEventListener('click', loadTemplates);
+
+      async function loadTemplates() {
+        try {
+          show('Loading templates...');
+          const response = await fetch('/api/admin/templates', { headers: adminHeaders() });
+          const data = await response.json();
+          if (!response.ok) throw new Error(data.error || 'Could not load templates');
+          renderTemplateTable(data.templates || []);
+          show(`Loaded ${(data.templates || []).length} template(s).`);
+        } catch (error) {
+          show('Error: ' + error.message);
+        }
+      }
+
+      function startTemplateEdit(template) {
+        templateIdInput.value = template.id;
+        // Carried through on save so editing text doesn't silently reset sort order or reactivate
+        // a template staff turned off - the form only has name/body fields.
+        templateIdInput.dataset.sortOrder = template.sort_order;
+        templateIdInput.dataset.active = template.active ? '1' : '0';
+        templateNameInput.value = template.name;
+        templateBodyInput.value = template.body;
+        cancelTemplateEditBtn.hidden = false;
+        document.querySelector('.template-form').scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+
+      function resetTemplateForm() {
+        templateIdInput.value = '';
+        delete templateIdInput.dataset.sortOrder;
+        delete templateIdInput.dataset.active;
+        templateNameInput.value = '';
+        templateBodyInput.value = '';
+        cancelTemplateEditBtn.hidden = true;
+      }
+
+      function renderTemplateTable(templates) {
+        templateTableBody.innerHTML = '';
+        for (const template of templates) {
+          const row = document.createElement('tr');
+
+          const nameCell = document.createElement('td');
+          nameCell.textContent = template.name;
+          row.appendChild(nameCell);
+
+          const bodyCell = document.createElement('td');
+          bodyCell.textContent = template.body;
+          row.appendChild(bodyCell);
+
+          const activeCell = document.createElement('td');
+          const activeToggle = document.createElement('input');
+          activeToggle.type = 'checkbox';
+          activeToggle.style.width = 'auto';
+          activeToggle.checked = Boolean(template.active);
+          activeToggle.addEventListener('change', async () => {
+            try {
+              const response = await fetch('/api/admin/templates', {
+                method: 'POST',
+                headers: adminHeaders(),
+                body: JSON.stringify({ id: template.id, name: template.name, body: template.body, sortOrder: template.sort_order, active: activeToggle.checked }),
+              });
+              const data = await response.json();
+              if (!response.ok) throw new Error(data.error || 'Save failed');
+            } catch (error) {
+              show('Error: ' + error.message);
+              activeToggle.checked = !activeToggle.checked;
+            }
+          });
+          activeCell.appendChild(activeToggle);
+          row.appendChild(activeCell);
+
+          const actionsCell = document.createElement('td');
+          const editBtn = document.createElement('button');
+          editBtn.type = 'button';
+          editBtn.className = 'secondary';
+          editBtn.style.marginTop = '0';
+          editBtn.textContent = 'Edit';
+          editBtn.addEventListener('click', () => startTemplateEdit(template));
+          const deleteBtn = document.createElement('button');
+          deleteBtn.type = 'button';
+          deleteBtn.className = 'danger';
+          deleteBtn.style.marginTop = '0';
+          deleteBtn.textContent = 'Delete';
+          deleteBtn.addEventListener('click', async () => {
+            if (!window.confirm(`Delete template "${template.name}"? Past send history is unaffected.`)) return;
+            try {
+              const response = await fetch(`/api/admin/templates/${encodeURIComponent(template.id)}`, { method: 'DELETE', headers: adminHeaders() });
+              const data = await response.json();
+              if (!response.ok) throw new Error(data.error || 'Delete failed');
+              loadTemplates();
+            } catch (error) {
+              show('Error: ' + error.message);
+            }
+          });
+          actionsCell.appendChild(editBtn);
+          actionsCell.appendChild(deleteBtn);
+          row.appendChild(actionsCell);
+
+          templateTableBody.appendChild(row);
+        }
+        templateTable.hidden = templates.length === 0;
+      }
+
+      document.getElementById('saveTemplate').addEventListener('click', async () => {
+        const name = templateNameInput.value.trim();
+        const body = templateBodyInput.value.trim();
+        if (!name || !body) { show('Error: template name and message are both required.'); return; }
+        try {
+          const response = await fetch('/api/admin/templates', {
+            method: 'POST',
+            headers: adminHeaders(),
+            body: JSON.stringify({
+              id: templateIdInput.value || undefined,
+              name,
+              body,
+              sortOrder: templateIdInput.dataset.sortOrder ? Number(templateIdInput.dataset.sortOrder) : undefined,
+              active: templateIdInput.dataset.active !== undefined ? templateIdInput.dataset.active === '1' : undefined,
+            }),
+          });
+          const data = await response.json();
+          if (!response.ok) throw new Error(data.error || 'Save failed');
+          show(`Saved template "${name}".`);
+          resetTemplateForm();
+          loadTemplates();
+        } catch (error) {
+          show('Error: ' + error.message);
+        }
+      });
+
+      cancelTemplateEditBtn.addEventListener('click', resetTemplateForm);
 
       document.getElementById('sync').addEventListener('click', async () => {
         try {

@@ -46,29 +46,40 @@ Parking spots have no Airtable table at all — they're entered once via
 
 # "Text Parents" notices
 
-Each office screen shows one of two canned notices, chosen by
-`renderNotifyButton()` based on which screen it is:
+Clicking "Text Parents" on a route (every dismissal screen - from-school,
+PRI, Friday; **not** shown on `/office/morning`, which is waiting for buses
+to arrive rather than dismissing them) opens a picker of message templates
+and sends whichever one staff choose. There's no fixed set of messages in
+code - templates are rows in the `text_templates` table, managed on
+`/setup.html`'s "Text templates" section (add/edit/delete, an active
+checkbox to hide one from the picker without losing it). A template's
+`body` can reference `{name}` (the route's `display_name` - a bus color for
+PM routes, a route code like `TBY1` for AM routes) and `{time}` (formatted
+in `SCHOOL_TIME_ZONE` at the moment staff click the template - frozen into
+the message right there via `renderTemplate()`, so what's shown in the
+confirm dialog is exactly what sends). Two templates seed automatically the
+first time the app runs (`seedDefaultTextTemplates()`, a one-time check —
+deleting them on purpose doesn't bring them back):
 
-- **Morning (`/office/morning`)**: "Text Parents: Bus Not Here Yet" -
-  `TBY <name>: Your bus has not yet arrived at school. We will text you when
-  it departs.` For a delayed AM arrival.
-- **Every dismissal screen** (from-school, PRI, Friday - Friday's page shows
-  AM routes too, but they're being dismissed that day like everything else on
-  it): "Text Parents: Bus Left" - `TBY <name>: <name> left school at
-  <time>.`, where `<time>` is formatted in `SCHOOL_TIME_ZONE` at the moment
-  the office clicks the button (frozen into the message text right there, so
-  what's shown in the confirm dialog is exactly what sends). `<name>` is the
-  route's `display_name` - a bus color for PM routes, a route code like
-  `TBY1` for AM routes - used as a prefix so a parent on more than one
-  route's list can tell which bus a text is about.
+- **Bus Left**: `TBY {name}: {name} left school at {time}.`
+- **Not Here Yet**: `TBY {name}: Your bus has not yet arrived at school. We
+  will text you when it departs.` For a delayed dismissal bus that hasn't
+  shown up at school yet to pick up students.
 
-Both message builders live in `BUS_NOTICE_MESSAGE_BUILDERS`; the recipient
-resolution below is shared by both, keyed off `kind` (`'departed'` /
-`'not-arrived'`) through `previewBusNotice()`/`sendBusNotice()` and the
-`/api/office/route/:id/notify-departure/*` and `/notify-not-arrived/*`
-endpoints.
+`previewBusNotice()`/`sendBusNotice()` (behind `GET /api/office/templates`
+for the picker list and `/api/office/route/:id/notify/preview` +
+`/notify/send`) take a `templateId` instead of a fixed message. Every actual
+send (not preview) is logged to `text_log` - service date, screen, route,
+template name, the exact rendered message, and recipient/failure counts -
+which backs two things on the office grid: the button turns green
+("texted") once any template has been sent to that route today, and a "View
+all" link opens that route's full day of sent texts
+(`GET /api/office/route/:id/text-log`). Editing or deleting a template never
+touches this history, since the log copies the rendered name and message in
+directly rather than referencing the template row.
 
-Neither button resolves parent phone numbers itself. It calls the `tby-texting-system` app's
+Neither the picker nor the send itself resolves parent phone numbers - it
+calls the `tby-texting-system` app's
 `/api/mcp` endpoint (`TEXTING_SYSTEM_URL` / `TEXTING_MCP_AUTH_TOKEN`) and
 asks it to text that route's assigned families. Who a route targets is
 resolved in `busDepartureRouteInfo()`, in this order:
