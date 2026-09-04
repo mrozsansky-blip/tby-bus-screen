@@ -23,7 +23,7 @@
     <div id="bulletin-view" class="bulletin-view hidden">
       <img id="bulletin-image" class="bulletin-media hidden" alt="" />
       <embed id="bulletin-pdf" class="bulletin-media hidden" type="application/pdf" />
-      <div id="bulletin-empty" class="bulletin-empty hidden">No bulletin file has been uploaded yet.</div>
+      <div id="bulletin-empty" class="bulletin-empty hidden">Bulletin screen - upload a file from Office → Bulletin to show something here.</div>
     </div>
 
     <script>
@@ -139,7 +139,7 @@
           if (!meta.filename) {
             img.classList.add('hidden');
             pdf.classList.add('hidden');
-            empty.textContent = 'No bulletin file has been uploaded yet.';
+            empty.textContent = 'Bulletin screen - upload a file from Office → Bulletin to show something here.';
             empty.classList.remove('hidden');
             lastBulletinKey = '';
             return;
