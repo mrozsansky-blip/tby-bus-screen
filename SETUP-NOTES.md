@@ -183,3 +183,44 @@ Three unrelated `/office/*` bugs, fixed together:
 The "Text Parents" picker has a free-text box below the template list for a
 one-off message that doesn't need a saved template - see the "Text Parents"
 notices section above.
+
+# Bus-color banners, bulk "Bus Left" texts, PRI company/bus number
+
+- **Bus name banners are colored to match the actual bus.** `routes.color`
+  (synced from Airtable's "Bus Color" field, or set by hand on
+  `/setup.html`) is now returned by `mapRouteRow()` and applied client-side
+  as the `.bus-name` background on both the student screen (`index.html`)
+  and the office grid (`office.html`), via `applyBusNameColors()` in each.
+  Deliberately done through the CSS OM (`el.style.backgroundColor = ...`)
+  after the cards are already in the DOM, rather than interpolated into the
+  `innerHTML` string - an unset or malformed color value is just ignored by
+  the browser instead of risking a broken/injected style attribute. Text
+  color (black or white) is picked per banner from the actual rendered
+  background color (`pickReadableTextColor()`, a luminance check via
+  `getComputedStyle`), so a light bus color like yellow doesn't render
+  white-on-near-white.
+- **"Text 'Bus Left' to All Departed Buses" bulk button**, above the route
+  grid on every dismissal office screen (not `/office/morning`, which has no
+  texting). `sendBusLeftToAllDeparted()` finds every route on the current
+  screen currently `Departed`, resolves the "Bus Left" template (matched by
+  the seeded id `bus-left`, falling back to a template literally named "Bus
+  Left" so this survives someone re-adding it under a new id), skips any
+  bus already texted that exact template today (checked the same way the
+  per-bus button warns about a duplicate send), shows one confirm dialog
+  naming every bus about to be texted, then sends them one at a time through
+  the same preview → send flow as a manual send (so it's still logged to
+  `text_log` and still a real campaign in `tby-texting-system`).
+- **`{company}` / `{busNumber}` template tokens**, filled in from two inputs
+  shown only in the "Text Parents" modal on `/office/pri-dismissal`
+  (`#primary-bus-fields`). PRI routes don't have a fixed carrier bus the way
+  From School routes do - the actual company and bus number can differ day
+  to day - so instead of being a stored route property, staff type it in at
+  send time. The company input prefills from `routes.company` (already
+  synced from Airtable) since that's usually right; bus number always
+  starts blank, since Airtable has no field for it. Both are threaded
+  through `getPrimaryBusFields()` → the `/notify/preview` request body →
+  `previewBusNotice()`'s `extraVars` → `renderTemplate()`, so any template
+  or custom message can reference `{company}`/`{busNumber}` the same way it
+  already does `{name}`/`{time}`. They're sent (usually blank) from every
+  other screen too - harmless, since a template with no `{company}` token
+  just never looks at the value.
