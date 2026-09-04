@@ -2,6 +2,8 @@ const express = require('express');
 const path = require('path');
 const { randomUUID } = require('crypto');
 const { createClient } = require('@libsql/client');
+const { del } = require('@vercel/blob');
+const { handleUpload } = require('@vercel/blob/client');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -24,6 +26,14 @@ const TEXTING_SYSTEM_URL = (process.env.TEXTING_SYSTEM_URL || '').replace(/\/+$/
 const TEXTING_MCP_AUTH_TOKEN = process.env.TEXTING_MCP_AUTH_TOKEN || '';
 
 const STATUS_VALUES = ['Waiting', 'Arrived', 'Loading', 'Ready to Board', 'Departed', 'Delayed', 'Cancelled'];
+
+// The "Bulletin" screen shows one uploaded image or PDF full-screen instead of the bus grid (see
+// the "bulletin" section below). The file itself lives in Vercel Blob storage, not Turso - Vercel
+// Functions cap both request and response bodies at 4.5MB, so a 25MB upload/download can never
+// pass through this app's own API. Only a pointer (URL + metadata) is stored in Turso; the office
+// browser uploads straight to Blob storage and the public screen loads straight from its CDN URL.
+const BULLETIN_MAX_BYTES = 25 * 1024 * 1024;
+const BULLETIN_ALLOWED_MIME_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'application/pdf']);
 
 let dbClient = null;
 let schemaReady = null;
@@ -155,6 +165,20 @@ async function createSchema() {
       sent_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY(route_id) REFERENCES routes(id)
     )`,
+    // One row (id = 'current') pointing at whatever file is currently uploaded for the Bulletin
+    // screen - see the BULLETIN_MAX_BYTES comment above for why this stores a Blob URL/pathname
+    // rather than the file bytes themselves. Replacing the row (setBulletin()) also deletes the
+    // previous blob from storage, since only one file is ever live at a time.
+    `CREATE TABLE IF NOT EXISTS bulletin_screen (
+      id TEXT PRIMARY KEY,
+      url TEXT NOT NULL,
+      pathname TEXT NOT NULL,
+      filename TEXT NOT NULL,
+      mime_type TEXT NOT NULL,
+      file_size INTEGER,
+      uploaded_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`,
     `CREATE INDEX IF NOT EXISTS idx_routes_screen ON routes(workflow_type, use_friday, active, sort_order)`,
     `CREATE INDEX IF NOT EXISTS idx_daily_status_lookup ON daily_status(service_date, screen, route_id)`,
     `CREATE INDEX IF NOT EXISTS idx_event_log_export ON event_log(exported_at, service_date)`,
@@ -212,10 +236,18 @@ function getOfficePin(req) {
 
 function validateOfficePin(req, res) {
   if (!requireConfiguredSecret(OFFICE_PIN, 'OFFICE_PIN', res)) return false;
-  if (!OFFICE_PIN && !isProductionRuntime()) return true;
-  if (getOfficePin(req) === OFFICE_PIN) return true;
-  res.status(401).json({ error: 'Invalid office PIN' });
-  return false;
+  if (!isValidOfficePin(getOfficePin(req))) {
+    res.status(401).json({ error: 'Invalid office PIN' });
+    return false;
+  }
+  return true;
+}
+
+// Same pass/fail rule as validateOfficePin, but without touching `res` - used inside the Blob
+// upload callback below (see /api/office/bulletin/upload), which can't send its own HTTP response.
+function isValidOfficePin(pin) {
+  if (!OFFICE_PIN) return !isProductionRuntime();
+  return pin === OFFICE_PIN;
 }
 
 function getAdminSecret(req) {
@@ -276,7 +308,7 @@ function getSchoolNowParts() {
   return { weekday: value('weekday'), hour: Number(value('hour')), minute: Number(value('minute')) };
 }
 
-const OVERRIDABLE_SCREENS = ['from-school', 'pri-dismissal', 'friday-dismissal'];
+const OVERRIDABLE_SCREENS = ['from-school', 'pri-dismissal', 'friday-dismissal', 'bulletin'];
 const CURRENT_SCREEN_OVERRIDE_KEY = 'current_screen_override';
 
 async function getSetting(key) {
@@ -319,11 +351,63 @@ async function setScreenOverride(screen) {
   return screen;
 }
 
+async function getBulletin() {
+  await ensureSchema();
+  const result = await run(
+    `SELECT url, pathname, filename, mime_type, file_size, uploaded_at FROM bulletin_screen WHERE id = 'current'`
+  );
+  return result.rows[0] || null;
+}
+
+// Replaces whatever bulletin file is currently live - only one is ever shown at a time, so once
+// the new pointer is saved, the previous file is deleted from Blob storage (best-effort - a
+// failure here just leaves an orphaned blob behind, it doesn't block the new upload).
+async function setBulletin({ url, pathname, filename, mimeType, fileSize }) {
+  await ensureSchema();
+  const previous = await getBulletin();
+  await run(
+    `INSERT INTO bulletin_screen (id, url, pathname, filename, mime_type, file_size, uploaded_at, updated_at)
+     VALUES ('current', ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+     ON CONFLICT(id) DO UPDATE SET
+       url = excluded.url, pathname = excluded.pathname, filename = excluded.filename,
+       mime_type = excluded.mime_type, file_size = excluded.file_size, uploaded_at = excluded.uploaded_at,
+       updated_at = CURRENT_TIMESTAMP`,
+    [url, pathname, filename, mimeType, fileSize || null, new Date().toISOString()]
+  );
+  if (previous && previous.url && previous.url !== url) {
+    try {
+      await del(previous.url);
+    } catch (error) {
+      console.error('Failed to delete previous bulletin blob:', error);
+    }
+  }
+}
+
+async function clearBulletin() {
+  await ensureSchema();
+  const previous = await getBulletin();
+  await run(`DELETE FROM bulletin_screen WHERE id = 'current'`);
+  if (previous && previous.url) {
+    try {
+      await del(previous.url);
+    } catch (error) {
+      console.error('Failed to delete bulletin blob:', error);
+    }
+  }
+}
+
+// Bulletin fills the slot before dismissal-related screens are relevant - it's what's on the
+// screen for most of the school day, then hands off to the regular dismissal schedule below.
 function computeScheduledScreen() {
   const { weekday, hour, minute } = getSchoolNowParts();
-  if (weekday === 'Fri') return 'friday-dismissal';
   const minutes = hour * 60 + minute;
-  const regularDismissal = 15 * 60 + 30;
+  if (weekday === 'Fri') {
+    const fridayBulletinEnd = 11 * 60; // 11:00 AM
+    return minutes < fridayBulletinEnd ? 'bulletin' : 'friday-dismissal';
+  }
+  const bulletinEnd = 14 * 60 + 15; // 2:15 PM
+  const regularDismissal = 15 * 60 + 30; // 3:30 PM
+  if (minutes < bulletinEnd) return 'bulletin';
   return minutes < regularDismissal ? 'pri-dismissal' : 'from-school';
 }
 
@@ -1041,7 +1125,7 @@ app.get('/events', (req, res) => {
 
 app.get('/api/routes/:screen', async (req, res) => {
   const screen = req.params.screen;
-  if (!['current', 'from-school', 'pri-dismissal', 'friday-dismissal'].includes(screen)) return res.status(404).json({ error: 'Unknown screen' });
+  if (!['current', 'from-school', 'pri-dismissal', 'friday-dismissal', 'bulletin'].includes(screen)) return res.status(404).json({ error: 'Unknown screen' });
   try {
     const result = await fetchRoutesForScreen(screen);
     res.json({ screen: result.screen, requestedScreen: screen, updatedAt: new Date().toISOString(), routes: result.routes });
@@ -1073,6 +1157,110 @@ app.post('/api/office/screen-override', async (req, res) => {
     const override = await setScreenOverride(req.body?.screen || 'auto');
     notifyDisplays();
     res.json({ override, scheduledScreen: computeScheduledScreen() });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// A plain PIN check with no data of its own - office-bulletin.html uses this to show the "wrong
+// PIN" prompt right away, since its actual data endpoint (/api/bulletin, below) is intentionally
+// not PIN-gated. Without this, a mistyped PIN there would go unnoticed until the far less clear
+// "Failed to retrieve the client token" error from an upload attempt (the Blob upload SDK doesn't
+// surface our own error messages from that call - see /api/office/bulletin/upload below).
+app.get('/api/office/ping', (req, res) => {
+  if (!validateOfficePin(req, res)) return;
+  res.json({ ok: true });
+});
+
+// Public - read-only pointer info for the currently-uploaded bulletin file (or none). No PIN
+// needed: it's used by the public bulletin screen itself, and the Blob URL it returns is already
+// a publicly-fetchable CDN link, so there's nothing sensitive to gate here. The office bulletin
+// page (/office/bulletin) reuses this same endpoint to show what's currently live.
+app.get('/api/bulletin', async (req, res) => {
+  try {
+    const bulletin = await getBulletin();
+    res.json(
+      bulletin
+        ? {
+            filename: bulletin.filename,
+            mimeType: bulletin.mime_type,
+            fileSize: bulletin.file_size,
+            uploadedAt: bulletin.uploaded_at,
+            url: bulletin.url,
+          }
+        : { filename: null }
+    );
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Backs the office bulletin page's upload button, via @vercel/blob's client-upload flow
+// (public/vendor/vercel-blob-client.js on the browser side): the file itself is PUT straight from
+// the office browser to Vercel Blob storage, never through this server (see the BULLETIN_MAX_BYTES
+// comment near the top of this file for why). This route only ever sees two small JSON calls:
+//   1. "generate a token" - before the browser starts the upload. This is the only place the
+//      office PIN can be checked (it travels in clientPayload, since the real upload request
+//      never reaches us), and where the file type/size are constrained server-side.
+//   2. "upload completed" - a webhook Vercel's own Blob service sends after the PUT above
+//      succeeds. handleUpload() verifies this call is genuinely from Vercel (via the
+//      x-vercel-signature header) before invoking onUploadCompleted, so it needs no PIN check.
+app.post('/api/office/bulletin/upload', async (req, res) => {
+  try {
+    const jsonResponse = await handleUpload({
+      body: req.body,
+      request: req,
+      onBeforeGenerateToken: async (pathname, clientPayloadJson) => {
+        let clientPayload = {};
+        try {
+          clientPayload = JSON.parse(clientPayloadJson || '{}');
+        } catch (error) {
+          // leave clientPayload empty - isValidOfficePin(undefined) below will reject it
+        }
+        if (!isValidOfficePin(clientPayload.pin)) throw new Error('Invalid office PIN.');
+        if (!BULLETIN_ALLOWED_MIME_TYPES.has(clientPayload.mimeType)) {
+          throw new Error('Unsupported file type - upload an image (JPG/PNG/GIF/WEBP) or a PDF.');
+        }
+        if (Number(clientPayload.fileSize) > BULLETIN_MAX_BYTES) {
+          throw new Error('That file is too large (max 25MB).');
+        }
+        return {
+          allowedContentTypes: [...BULLETIN_ALLOWED_MIME_TYPES],
+          maximumSizeInBytes: BULLETIN_MAX_BYTES,
+          addRandomSuffix: true,
+          // PutBlobResult (what onUploadCompleted receives as `blob`) carries no file-size field,
+          // so the size the browser already knows is round-tripped here to store alongside the
+          // pointer for display on the office bulletin page.
+          tokenPayload: JSON.stringify({ filename: clientPayload.filename || 'bulletin', fileSize: clientPayload.fileSize || null }),
+        };
+      },
+      onUploadCompleted: async ({ blob, tokenPayload }) => {
+        const { filename, fileSize } = tokenPayload ? JSON.parse(tokenPayload) : {};
+        await setBulletin({
+          url: blob.url,
+          pathname: blob.pathname,
+          filename: filename || blob.pathname,
+          mimeType: blob.contentType || '',
+          fileSize,
+        });
+        notifyDisplays();
+      },
+    });
+    res.json(jsonResponse);
+  } catch (error) {
+    console.error(error);
+    res.status(400).json({ error: error.message });
+  }
+});
+
+app.delete('/api/office/bulletin', async (req, res) => {
+  if (!validateOfficePin(req, res)) return;
+  try {
+    await clearBulletin();
+    notifyDisplays();
+    res.json({ ok: true });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: error.message });
@@ -1350,7 +1538,11 @@ app.get(['/office', '/office/morning', '/office/from-school', '/office/pri-dismi
   res.sendFile(path.join(__dirname, 'public', 'office.html'));
 });
 
-app.get(['/current', '/from-school', '/pri-dismissal', '/friday-dismissal'], (req, res) => {
+app.get('/office/bulletin', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'office-bulletin.html'));
+});
+
+app.get(['/current', '/from-school', '/pri-dismissal', '/friday-dismissal', '/bulletin'], (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 

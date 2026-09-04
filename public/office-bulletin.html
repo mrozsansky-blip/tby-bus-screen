@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TBY Bus Office - Bulletin</title>
+    <link rel="stylesheet" href="/office.css" />
+    <style>
+      .bulletin-shell { max-width: 640px; margin: 0 auto; padding: 14px; }
+      .bulletin-card { background: var(--card); border: 2px solid var(--border); border-radius: 14px; padding: 18px; margin-top: 14px; }
+      .bulletin-card h2 { margin: 0 0 10px; font-size: 18px; }
+      .bulletin-card p.hint { margin: 0 0 12px; color: var(--muted); font-size: 13px; font-weight: 600; }
+      .current-file { padding: 12px; border-radius: 10px; background: #f9fafb; border: 1px solid var(--border); font-size: 14px; line-height: 1.5; }
+      .current-file a { color: var(--blue); font-weight: 800; text-decoration: none; }
+      .upload-row { display: flex; flex-direction: column; gap: 10px; margin-top: 4px; }
+      .upload-row input[type='file'] { border: none; padding: 4px 0; font-size: 14px; }
+      .progress-bar { height: 8px; border-radius: 999px; background: #e5e7eb; overflow: hidden; }
+      .progress-bar-fill { height: 100%; width: 0%; background: var(--blue); transition: width 0.15s linear; }
+      .danger-btn { background: var(--red); color: white; }
+      button.wide { width: 100%; margin-top: 6px; }
+    </style>
+  </head>
+  <body>
+    <main class="office-shell">
+      <header class="office-header">
+        <div>
+          <div class="eyebrow">TBY Bus Office</div>
+          <h1>Bulletin Screen</h1>
+        </div>
+        <div class="header-right">
+          <nav class="tabs">
+            <a href="/office/from-school">Routes</a>
+          </nav>
+          <div id="updated" class="updated"></div>
+        </div>
+      </header>
+
+      <section id="pin-box" class="pin-box hidden">
+        <h2>Office PIN</h2>
+        <p>Enter the office PIN to manage the bulletin screen.</p>
+        <form id="pin-form">
+          <input id="pin-input" type="password" inputmode="numeric" autocomplete="current-password" placeholder="PIN" />
+          <button type="submit">Open</button>
+        </form>
+      </section>
+
+      <section id="message" class="message hidden"></section>
+
+      <div id="bulletin-content" class="bulletin-shell hidden">
+        <div class="bulletin-card">
+          <h2>Current file</h2>
+          <div id="current-file" class="current-file">Loading...</div>
+        </div>
+
+        <div class="bulletin-card">
+          <h2>Upload a new file</h2>
+          <p class="hint">Image (JPG/PNG/GIF/WEBP) or PDF, up to 25MB. Uploading a new file replaces the one currently showing on the public screen.</p>
+          <div class="upload-row">
+            <input id="file-input" type="file" accept="image/jpeg,image/png,image/gif,image/webp,application/pdf" />
+            <div class="progress-bar hidden" id="progress-wrap"><div class="progress-bar-fill" id="progress-fill"></div></div>
+            <button id="upload-btn" type="button" class="wide">Upload</button>
+          </div>
+        </div>
+
+        <div class="bulletin-card">
+          <h2>Remove</h2>
+          <p class="hint">Clears the bulletin screen back to empty - it won't show anything until a new file is uploaded.</p>
+          <button id="remove-btn" type="button" class="danger-btn wide">Remove current file</button>
+        </div>
+      </div>
+    </main>
+
+    <script type="module">
+      import { upload } from '/vendor/vercel-blob-client.js';
+
+      let officePin = window.localStorage.getItem('tbyOfficePin') || '';
+      const MAX_BYTES = 25 * 1024 * 1024;
+      const ALLOWED_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'application/pdf']);
+
+      function showMessage(text, type = 'info') {
+        const box = document.getElementById('message');
+        box.textContent = text;
+        box.className = `message ${type}`;
+        box.classList.remove('hidden');
+        window.clearTimeout(showMessage.timer);
+        showMessage.timer = window.setTimeout(() => box.classList.add('hidden'), 6000);
+      }
+
+      function showPinBox() {
+        document.getElementById('pin-box').classList.remove('hidden');
+        document.getElementById('bulletin-content').classList.add('hidden');
+      }
+
+      function hidePinBox() {
+        document.getElementById('pin-box').classList.add('hidden');
+        document.getElementById('bulletin-content').classList.remove('hidden');
+      }
+
+      function formatBytes(bytes) {
+        if (!bytes) return '0 B';
+        const units = ['B', 'KB', 'MB', 'GB'];
+        let value = bytes;
+        let i = 0;
+        while (value >= 1024 && i < units.length - 1) {
+          value /= 1024;
+          i++;
+        }
+        return `${value.toFixed(i === 0 || value >= 10 ? 0 : 1)} ${units[i]}`;
+      }
+
+      function formatTime(value) {
+        if (!value) return '--';
+        const date = new Date(value);
+        if (Number.isNaN(date.getTime())) return value;
+        return date.toLocaleString('en-US', { hour: 'numeric', minute: '2-digit', month: 'short', day: 'numeric' });
+      }
+
+      function escapeHtml(value) {
+        return String(value ?? '')
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#039;');
+      }
+
+      async function loadCurrentFile() {
+        if (!officePin) {
+          showPinBox();
+          return;
+        }
+        try {
+          // /api/bulletin itself has no PIN check (see server.js) - ping first so a wrong PIN is
+          // caught here, not as a confusing failure when they try to upload.
+          const pingResponse = await fetch('/api/office/ping', { cache: 'no-store', headers: { 'x-office-pin': officePin } });
+          if (pingResponse.status === 401) {
+            officePin = '';
+            window.localStorage.removeItem('tbyOfficePin');
+            showPinBox();
+            showMessage('Invalid PIN. Please try again.', 'error');
+            return;
+          }
+          if (!pingResponse.ok) throw new Error((await pingResponse.json().catch(() => ({}))).error || 'Could not verify the office PIN.');
+
+          const response = await fetch('/api/bulletin', { cache: 'no-store' });
+          const data = await response.json();
+          if (!response.ok) throw new Error(data.error || 'Could not load the current file.');
+          hidePinBox();
+          renderCurrentFile(data);
+          document.getElementById('updated').textContent = `Updated ${formatTime(new Date().toISOString())}`;
+        } catch (error) {
+          showMessage(error.message, 'error');
+        }
+      }
+
+      function renderCurrentFile(meta) {
+        const box = document.getElementById('current-file');
+        if (!meta.filename) {
+          box.textContent = 'Nothing is uploaded right now - the public screen shows an empty bulletin slot.';
+          return;
+        }
+        box.innerHTML = `
+          <strong>${escapeHtml(meta.filename)}</strong> (${escapeHtml(meta.mimeType)}, ${formatBytes(meta.fileSize)})<br>
+          Uploaded ${formatTime(meta.uploadedAt)} &middot;
+          <a href="${escapeHtml(meta.url)}" target="_blank" rel="noopener">Preview</a>
+        `;
+      }
+
+      document.getElementById('upload-btn').addEventListener('click', () => {
+        const input = document.getElementById('file-input');
+        const file = input.files[0];
+        if (!file) {
+          showMessage('Choose a file first.', 'error');
+          return;
+        }
+        if (!ALLOWED_TYPES.has(file.type)) {
+          showMessage('That file type is not supported - use an image (JPG/PNG/GIF/WEBP) or a PDF.', 'error');
+          return;
+        }
+        if (file.size > MAX_BYTES) {
+          showMessage(`That file is too big (max ${formatBytes(MAX_BYTES)}).`, 'error');
+          return;
+        }
+        uploadFile(file);
+      });
+
+      async function uploadFile(file) {
+        const progressWrap = document.getElementById('progress-wrap');
+        const progressFill = document.getElementById('progress-fill');
+        progressWrap.classList.remove('hidden');
+        progressFill.style.width = '0%';
+
+        try {
+          await upload(`bulletin/${Date.now()}-${file.name}`, file, {
+            access: 'public',
+            handleUploadUrl: '/api/office/bulletin/upload',
+            contentType: file.type,
+            clientPayload: JSON.stringify({ pin: officePin, mimeType: file.type, filename: file.name, fileSize: file.size }),
+            onUploadProgress: ({ percentage }) => {
+              progressFill.style.width = `${Math.round(percentage)}%`;
+            },
+          });
+          progressWrap.classList.add('hidden');
+          showMessage('Uploaded. The public screen will update automatically.', 'success');
+          document.getElementById('file-input').value = '';
+          loadCurrentFile();
+        } catch (error) {
+          progressWrap.classList.add('hidden');
+          // The Blob upload SDK doesn't surface our server's actual error message here (wrong
+          // PIN, bad file type, etc. all collapse to the same generic failure) - the PIN itself
+          // was already confirmed by loadCurrentFile()'s ping, and type/size were checked above,
+          // so this should only happen for a genuine server-side problem.
+          showMessage('Upload failed - please try again.', 'error');
+        }
+      }
+
+      document.getElementById('remove-btn').addEventListener('click', async () => {
+        if (!window.confirm('Remove the current bulletin file? The public screen will show an empty slot until a new file is uploaded.')) return;
+        try {
+          const response = await fetch('/api/office/bulletin', { method: 'DELETE', headers: { 'x-office-pin': officePin } });
+          const data = await response.json().catch(() => ({}));
+          if (!response.ok) throw new Error(data.error || 'Remove failed.');
+          showMessage('Removed.', 'success');
+          loadCurrentFile();
+        } catch (error) {
+          showMessage(error.message, 'error');
+        }
+      });
+
+      document.getElementById('pin-form').addEventListener('submit', (event) => {
+        event.preventDefault();
+        officePin = document.getElementById('pin-input').value.trim();
+        window.localStorage.setItem('tbyOfficePin', officePin);
+        loadCurrentFile();
+      });
+
+      loadCurrentFile();
+    </script>
+  </body>
+</html>

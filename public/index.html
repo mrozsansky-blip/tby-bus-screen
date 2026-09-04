@@ -20,11 +20,18 @@
       <section id="bus-grid" class="bus-grid" aria-live="polite"></section>
     </main>
 
+    <div id="bulletin-view" class="bulletin-view hidden">
+      <img id="bulletin-image" class="bulletin-media hidden" alt="" />
+      <embed id="bulletin-pdf" class="bulletin-media hidden" type="application/pdf" />
+      <div id="bulletin-empty" class="bulletin-empty hidden">No bulletin file has been uploaded yet.</div>
+    </div>
+
     <script>
       const SCREEN_TITLES = {
         'from-school': 'From School Dismissal',
         'pri-dismissal': 'PRI Dismissal',
         'friday-dismissal': 'Friday Dismissal',
+        'bulletin': 'Announcement',
         'current': 'Bus Dismissal',
       };
 
@@ -50,7 +57,7 @@
 
       function getScreenKey() {
         const path = window.location.pathname.replace(/^\//, '') || 'current';
-        if (['current', 'from-school', 'pri-dismissal', 'friday-dismissal'].includes(path)) return path;
+        if (['current', 'from-school', 'pri-dismissal', 'friday-dismissal', 'bulletin'].includes(path)) return path;
         return 'current';
       }
 
@@ -104,6 +111,63 @@
           .replace(/'/g, '&#039;');
       }
 
+      // Tracks which bulletin file is currently on screen (filename + upload timestamp) so the
+      // 10-second poll below doesn't re-fetch/re-flash the image or PDF unless it actually changed.
+      let lastBulletinKey = '';
+
+      function showBulletinView() {
+        document.querySelector('.screen-shell').classList.add('hidden');
+        document.getElementById('bulletin-view').classList.remove('hidden');
+      }
+
+      function hideBulletinView() {
+        document.getElementById('bulletin-view').classList.add('hidden');
+        document.querySelector('.screen-shell').classList.remove('hidden');
+        lastBulletinKey = '';
+      }
+
+      async function renderBulletin() {
+        showBulletinView();
+        const img = document.getElementById('bulletin-image');
+        const pdf = document.getElementById('bulletin-pdf');
+        const empty = document.getElementById('bulletin-empty');
+        try {
+          const response = await fetch('/api/bulletin', { cache: 'no-store' });
+          const meta = await response.json();
+          if (!response.ok) throw new Error(meta.error || 'Could not load the bulletin file.');
+
+          if (!meta.filename) {
+            img.classList.add('hidden');
+            pdf.classList.add('hidden');
+            empty.textContent = 'No bulletin file has been uploaded yet.';
+            empty.classList.remove('hidden');
+            lastBulletinKey = '';
+            return;
+          }
+
+          const key = `${meta.filename}-${meta.uploadedAt}`;
+          empty.classList.add('hidden');
+          if (key === lastBulletinKey) return; // already showing this exact file
+          lastBulletinKey = key;
+
+          if (meta.mimeType === 'application/pdf') {
+            img.classList.add('hidden');
+            pdf.src = meta.url;
+            pdf.classList.remove('hidden');
+          } else {
+            pdf.classList.add('hidden');
+            img.src = meta.url;
+            img.classList.remove('hidden');
+          }
+        } catch (error) {
+          img.classList.add('hidden');
+          pdf.classList.add('hidden');
+          empty.textContent = error.message;
+          empty.classList.remove('hidden');
+          lastBulletinKey = '';
+        }
+      }
+
       async function loadRoutes(forceFresh = false) {
         const screen = getScreenKey();
         const errorBox = document.getElementById('error');
@@ -115,7 +179,12 @@
 
           errorBox.classList.add('hidden');
           setTitle(data.screen || screen);
-          renderRoutes(data.routes || []);
+          if (data.screen === 'bulletin') {
+            await renderBulletin();
+          } else {
+            hideBulletinView();
+            renderRoutes(data.routes || []);
+          }
           document.getElementById('updated').textContent = `Updated ${formatTime(new Date(data.updatedAt))}`;
         } catch (error) {
           errorBox.textContent = error.message;
