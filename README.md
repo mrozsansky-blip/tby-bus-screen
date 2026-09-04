@@ -29,9 +29,15 @@ Parking spots have no Airtable source — they're entered once via
 - `/from-school` - regular From School dismissal routes
 - `/pri-dismissal` - PRI dismissal routes
 - `/friday-dismissal` - Friday dismissal routes
+- `/bulletin` - shows one uploaded image or PDF full-screen (announcements,
+  a lunch menu, etc). See "Bulletin screen" in `SETUP-NOTES.md`.
 - `/current` - automatically picks the right screen based on the day/time
+  (including `/bulletin` for most of the school day - see the schedule in
+  `SETUP-NOTES.md`)
 - `/office/from-school`, `/office/pri-dismissal`, `/office/morning`,
   `/office/friday-dismissal` - office control panels (PIN-protected)
+- `/office/bulletin` - upload/replace/remove the Bulletin screen's file
+  (PIN-protected, same PIN as the other office pages)
 - `/setup.html` - one-time/occasional admin tools: import routes & parking
   spots directly, or sync routes from Airtable (admin-secret protected)
 
@@ -55,7 +61,14 @@ ADMIN_SECRET=secret for /api/admin/* routes (setup.html, sync, import)
 CRON_SECRET=secret the nightly export cron authenticates with
 AIRTABLE_TOKEN=your Airtable personal access token
 AIRTABLE_BASE_ID=appYCWLjqODndV4n2
+BLOB_READ_WRITE_TOKEN=auto-added by Vercel once a Blob store is connected
 ```
+
+`BLOB_READ_WRITE_TOKEN` backs the Bulletin screen's file upload (see
+"Bulletin screen" in `SETUP-NOTES.md`) - it isn't something you set
+yourself. In the Vercel dashboard: **Project → Storage → Create Database →
+Blob**, then connect it to this project; Vercel adds the env var
+automatically. Without it, `/office/bulletin` uploads fail.
 
 Optional environment variables:
 

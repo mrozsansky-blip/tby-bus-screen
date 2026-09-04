@@ -183,3 +183,65 @@ Three unrelated `/office/*` bugs, fixed together:
 The "Text Parents" picker has a free-text box below the template list for a
 one-off message that doesn't need a saved template - see the "Text Parents"
 notices section above.
+
+# Bulletin screen
+
+`/bulletin` shows one uploaded image or PDF full-screen (announcements, a
+lunch menu, a flyer, etc) instead of the bus grid. It's managed from
+`/office/bulletin` - PIN-protected like the other office pages, but
+deliberately not on `/setup.html`, so any staff member with the office PIN
+can update it, not just whoever holds the admin secret. That page shows
+what's currently live and lets staff upload a replacement (image or PDF, up
+to 25MB) or remove it entirely. Only one file is ever live at a time -
+uploading a new one replaces it.
+
+**Display schedule** (`computeScheduledScreen()` in `server.js`, times in
+`SCHOOL_TIME_ZONE`):
+
+| Day | Bulletin | Then |
+| --- | --- | --- |
+| Mon-Thu | until 2:15 PM | PRI Dismissal until 3:30 PM, then From School Dismissal |
+| Fri | until 11:00 AM | Friday Dismissal |
+
+This runs on `/current` automatically, the same as the from-school/PRI/Friday
+switch already did. The office can also force the public screen to Bulletin
+at any other time via the "Change public screen…" override on any
+`/office/*` page (it's `bulletin` alongside the existing Auto/From
+School/PRI/Friday choices there) - same as forcing any other screen, it
+resets at midnight.
+
+**Storage.** This app deploys as a single Vercel Function
+(`api/index.js`/`server.js`), and Vercel hard-caps both request and response
+bodies for Functions at 4.5MB - non-negotiable, and far under the 25MB this
+needs to support. So the file itself never passes through this app's API in
+either direction:
+
+- **Upload** - `/office/bulletin` uploads straight from the office browser to
+  Vercel Blob storage using `@vercel/blob`'s client-upload flow. The browser
+  loads `/vendor/vercel-blob-client.js` (a pre-bundled browser build of
+  `@vercel/blob/client` - the published package imports Node builtins that a
+  plain `<script type="module">` can't resolve on its own, and this repo has
+  no bundler/build step to do that resolution for it; regenerate it after
+  upgrading `@vercel/blob` with `npm run build:blob-client`), then calls
+  `upload()`, which POSTs to `/api/office/bulletin/upload` for a short-lived
+  upload token before PUTing the file directly to Blob storage. That route
+  handles two things via `handleUpload()`:
+  - **Generating the token** - the only place the office PIN is actually
+    checked (it travels inside `clientPayload`, since the real upload never
+    reaches this server to send an `x-office-pin` header), and where file
+    type/size are constrained (`BULLETIN_ALLOWED_MIME_TYPES`,
+    `BULLETIN_MAX_BYTES`).
+  - **The upload-completed webhook** - Vercel's Blob service calls this same
+    route after the browser's PUT succeeds, so the app can save the file's
+    URL into Turso (`bulletin_screen` table - just a pointer: URL, filename,
+    mime type, size, upload time, not the file itself). `handleUpload()`
+    verifies this call is genuinely from Vercel (`x-vercel-signature`) before
+    trusting it, so it needs no PIN check of its own.
+  - Uploading a new file deletes the previous one from Blob storage
+    (`del()`), since only one is ever live.
+- **Display** - the public `/bulletin` page (and `/current`, when it
+  resolves to bulletin) reads the pointer from `GET /api/bulletin` (no PIN -
+  it's the same public endpoint the office page's "current file" panel
+  reads, and the Blob URL it returns is already a public CDN link with
+  nothing sensitive in it) and points an `<img>`/`<embed>` straight at that
+  URL - Vercel's CDN serves it directly, not this app.
