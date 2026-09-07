@@ -1274,6 +1274,36 @@ app.post('/api/office/bulletin/upload', async (req, res) => {
   }
 });
 
+// Confirms an upload the office browser just completed and saves its pointer immediately, instead
+// of relying solely on the onUploadCompleted webhook above. That webhook comes from Vercel's own
+// Blob service calling back into this deployment - it can be delayed relative to the browser's own
+// upload finishing, or (on a preview deployment with Deployment Protection enabled) blocked
+// outright, in which case office-bulletin.html would show nothing uploaded right after a genuinely
+// successful upload. Calling this directly from the same authenticated browser that just did the
+// upload doesn't depend on that callback arriving at all. onUploadCompleted is left in place as a
+// harmless backup - setBulletin() is just an overwrite with the same values if this already ran.
+app.post('/api/office/bulletin/finalize', async (req, res) => {
+  if (!validateOfficePin(req, res)) return;
+  try {
+    const { url, pathname, filename, mimeType, fileSize } = req.body || {};
+    if (typeof url !== 'string' || !/^https:\/\/[^/]+\.blob\.vercel-storage\.com\//.test(url)) {
+      throw new Error('Invalid blob URL.');
+    }
+    if (typeof pathname !== 'string' || !pathname.startsWith('bulletin/')) {
+      throw new Error('Invalid blob pathname.');
+    }
+    if (!BULLETIN_ALLOWED_MIME_TYPES.has(mimeType)) {
+      throw new Error('Unsupported file type.');
+    }
+    await setBulletin({ url, pathname, filename: filename || pathname, mimeType, fileSize: Number(fileSize) || null });
+    notifyDisplays();
+    res.json({ ok: true });
+  } catch (error) {
+    console.error(error);
+    res.status(400).json({ error: error.message });
+  }
+});
+
 app.delete('/api/office/bulletin', async (req, res) => {
   if (!validateOfficePin(req, res)) return;
   try {

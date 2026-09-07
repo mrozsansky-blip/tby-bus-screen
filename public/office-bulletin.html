@@ -215,7 +215,7 @@
           const preflightData = await preflight.json().catch(() => ({}));
           if (!preflight.ok) throw new Error(preflightData.error || 'Could not start the upload.');
 
-          await uploadPresigned(pathname, file, {
+          const blob = await uploadPresigned(pathname, file, {
             access: 'public',
             handleUploadUrl: '/api/office/bulletin/upload',
             contentType: file.type,
@@ -224,6 +224,22 @@
               progressFill.style.width = `${Math.round(percentage)}%`;
             },
           });
+
+          // The upload itself is done at this point - the file is in Blob storage. Saving the
+          // pointer into Turso normally happens via the onUploadCompleted webhook (server-side),
+          // but that's Vercel's Blob service calling back into this deployment on its own schedule,
+          // which can lag behind this point or (behind Deployment Protection on a preview
+          // deployment) never arrive at all. Confirming it directly, from this same authenticated
+          // request, means the file shows as uploaded immediately and doesn't depend on that
+          // callback ever reaching the server.
+          const finalizeResponse = await fetch('/api/office/bulletin/finalize', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'x-office-pin': officePin },
+            body: JSON.stringify({ url: blob.url, pathname: blob.pathname, filename: file.name, mimeType: blob.contentType || file.type, fileSize: file.size }),
+          });
+          const finalizeData = await finalizeResponse.json().catch(() => ({}));
+          if (!finalizeResponse.ok) throw new Error(finalizeData.error || 'Uploaded, but could not save it as the current file.');
+
           progressWrap.classList.add('hidden');
           showMessage('Uploaded. The public screen will update automatically.', 'success');
           document.getElementById('file-input').value = '';
