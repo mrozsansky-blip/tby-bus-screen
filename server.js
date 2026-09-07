@@ -1110,7 +1110,17 @@ async function exportToAirtable() {
 app.get('/health', async (req, res) => {
   try {
     await ensureSchema();
-    res.json({ ok: true, database: 'turso' });
+    res.json({
+      ok: true,
+      database: 'turso',
+      // Whether the env vars the Bulletin upload needs are actually present on *this* deployment -
+      // a much faster way to confirm BLOB_READ_WRITE_TOKEN made it in after adding/changing it than
+      // trying an upload and reading the error. Booleans only - never echoes the token itself.
+      blob: {
+        readWriteToken: Boolean(process.env.BLOB_READ_WRITE_TOKEN),
+        storeId: Boolean(process.env.BLOB_STORE_ID),
+      },
+    });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message });
   }
