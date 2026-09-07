@@ -68,17 +68,16 @@ The Bulletin screen's file upload (see "Bulletin screen" in
 `SETUP-NOTES.md`) needs a Vercel Blob store connected to this project:
 **Project → Storage → Create Database → Blob**, then connect it to this
 project. That alone gets you `BLOB_STORE_ID` and `BLOB_WEBHOOK_PUBLIC_KEY`
-automatically (Vercel's newer, OIDC-based connection - no static token), but
-this app also needs an actual `BLOB_READ_WRITE_TOKEN`, because its upload
-flow has to PUT files to a plain storage CDN domain rather than `vercel.com`
-(some school/office networks block or break TLS to `vercel.com`
-specifically - see "Bulletin screen" in `SETUP-NOTES.md` for the full
-story), and that only works with a real token. To get one: open the Blob
-store's own page (Storage → the store, not the project) and look for a
-`.env.local` tab next to "Quickstart" showing a copyable
-`BLOB_READ_WRITE_TOKEN=...` value; add that to the project's environment
-variables (Production, Preview, and Development) and redeploy - env vars
-only apply to deployments built after they're added.
+automatically (Vercel's newer, OIDC-based connection), which is enough on
+its own for uploads to work - this app's server does the actual PUT to
+Blob storage itself (not the browser), and that server-side call works with
+either an OIDC-connected store or a static `BLOB_READ_WRITE_TOKEN`. Adding
+`BLOB_READ_WRITE_TOKEN` anyway (from the Blob store's own page → a
+`.env.local` tab next to "Quickstart") doesn't hurt and gives a fallback if
+OIDC ever isn't available. Either way, redeploy after connecting the store -
+env vars only apply to deployments built after they're added. Hit `/health`
+on the deployment to confirm what's actually present (`blob.readWriteToken`
+/ `blob.storeId`, booleans only).
 
 Optional environment variables:
 

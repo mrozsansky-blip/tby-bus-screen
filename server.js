@@ -2,8 +2,7 @@ const express = require('express');
 const path = require('path');
 const { randomUUID } = require('crypto');
 const { createClient } = require('@libsql/client');
-const { del } = require('@vercel/blob');
-const { handleUpload } = require('@vercel/blob/client');
+const { put, del } = require('@vercel/blob');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -28,11 +27,12 @@ const TEXTING_MCP_AUTH_TOKEN = process.env.TEXTING_MCP_AUTH_TOKEN || '';
 const STATUS_VALUES = ['Waiting', 'Arrived', 'Loading', 'Ready to Board', 'Departed', 'Delayed', 'Cancelled'];
 
 // The "Bulletin" screen shows one uploaded image or PDF full-screen instead of the bus grid (see
-// the "bulletin" section below). The file itself lives in Vercel Blob storage, not Turso - Vercel
-// Functions cap both request and response bodies at 4.5MB, so a 25MB upload/download can never
-// pass through this app's own API. Only a pointer (URL + metadata) is stored in Turso; the office
-// browser uploads straight to Blob storage and the public screen loads straight from its CDN URL.
-const BULLETIN_MAX_BYTES = 25 * 1024 * 1024;
+// the "bulletin" section below). The file itself lives in Vercel Blob storage, not Turso - only a
+// pointer (URL + metadata) is stored here. Uploads go office browser -> this server -> Blob
+// storage (see POST /api/office/bulletin/upload for why, after two direct-to-Blob approaches both
+// failed on the school's network) - so BULLETIN_MAX_BYTES has to stay under Vercel Functions' own
+// hard 4.5MB request-body cap, with headroom for HTTP overhead on top of the raw file bytes.
+const BULLETIN_MAX_BYTES = 4 * 1024 * 1024;
 const BULLETIN_ALLOWED_MIME_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'application/pdf']);
 
 let dbClient = null;
@@ -1207,110 +1207,66 @@ app.get('/api/bulletin', async (req, res) => {
   }
 });
 
-// Backs the office bulletin page's upload button via @vercel/blob's *client-token* upload flow
-// (public/vendor/vercel-blob-client.js on the browser side): the file itself is PUT straight from
-// the office browser to Vercel Blob storage, never through this server (see the
-// BULLETIN_MAX_BYTES comment near the top of this file for why).
+// Backs the office bulletin page's upload button. The file is PUT to Vercel Blob storage from
+// *this server*, not from the office browser - see the BULLETIN_MAX_BYTES comment near the top of
+// this file for why that caps the size at ~4MB rather than the 25MB originally planned.
 //
-// This app tried the newer, OIDC-compatible presigned-URL flow first (issueSignedToken /
-// handleUploadPresigned), since this project's Blob store connects via OIDC rather than a static
-// token. That flow's actual browser-to-storage PUT goes to a URL under vercel.com (the control
-// API), which turned out to be unreachable from the school's network - net::ERR_ALPN_NEGOTIATION_
-// FAILED, a TLS-level failure that persisted even after vercel.com was allow-listed there,
-// consistent with the network doing HTTPS/SSL inspection that specifically breaks ALPN
-// negotiation for that host. This older client-token flow's PUT instead goes directly to
-// <store>.public.blob.vercel-storage.com - a plain storage CDN host that also has to work for the
-// public screen to ever display the uploaded file, so it's a domain this deployment needs
-// reachable regardless. The trade-off: generateClientTokenFromReadWriteToken() (what handleUpload()
-// calls internally) requires a static BLOB_READ_WRITE_TOKEN with no OIDC fallback - see
-// SETUP-NOTES.md's "Bulletin screen" section for how to add one to a store connected via OIDC.
+// This app tried two different browser-to-Vercel-Blob-storage upload flows first (a client-token
+// flow, then an OIDC-compatible presigned-URL flow) - both have the browser PUT the file bytes
+// directly to Vercel's own infrastructure. Both failed identically on the school's network:
+// net::ERR_ALPN_NEGOTIATION_FAILED against vercel.com, a TLS-level failure that persisted even
+// after vercel.com was allow-listed there (consistent with the network doing HTTPS/SSL inspection
+// that specifically breaks ALPN negotiation for that host - a different, more specific setting
+// than a plain website allow-list, and not something fixable from this app's code). Routing the
+// upload through this server instead means the office browser only ever talks to this app's own
+// domain, which is already known to work - the browser-to-vercel.com leg is eliminated entirely,
+// at the cost of the size limit below.
 //
-// This route only ever sees two small JSON calls:
-//   1. "generate a token" - before the browser starts the upload. This is the only place the
-//      office PIN can be checked (it travels in clientPayload, since the real upload request
-//      never reaches us), and where the file type/size are constrained server-side.
-//   2. "upload completed" - a webhook Vercel's own Blob service sends after the PUT above
-//      succeeds. handleUpload() verifies this call is genuinely from Vercel (via the
-//      x-vercel-signature header, HMAC'd with BLOB_READ_WRITE_TOKEN) before invoking
-//      onUploadCompleted, so it needs no PIN check. See /api/office/bulletin/finalize below for
-//      why this app doesn't rely on this callback alone to know an upload succeeded.
-app.post('/api/office/bulletin/upload', async (req, res) => {
-  try {
-    const jsonResponse = await handleUpload({
-      body: req.body,
-      request: req,
-      onBeforeGenerateToken: async (pathname, clientPayloadJson) => {
-        let clientPayload = {};
-        try {
-          clientPayload = JSON.parse(clientPayloadJson || '{}');
-        } catch (error) {
-          // leave clientPayload empty - isValidOfficePin(undefined) below will reject it
-        }
-        if (!isValidOfficePin(clientPayload.pin)) throw new Error('Invalid office PIN.');
-        if (!BULLETIN_ALLOWED_MIME_TYPES.has(clientPayload.mimeType)) {
-          throw new Error('Unsupported file type - upload an image (JPG/PNG/GIF/WEBP) or a PDF.');
-        }
-        if (Number(clientPayload.fileSize) > BULLETIN_MAX_BYTES) {
-          throw new Error('That file is too large (max 25MB).');
-        }
-        return {
-          allowedContentTypes: [...BULLETIN_ALLOWED_MIME_TYPES],
-          maximumSizeInBytes: BULLETIN_MAX_BYTES,
-          addRandomSuffix: true,
-          // PutBlobResult (what onUploadCompleted receives as `blob`) carries no file-size field,
-          // so the size the browser already knows is round-tripped here to store alongside the
-          // pointer for display on the office bulletin page.
-          tokenPayload: JSON.stringify({ filename: clientPayload.filename || 'bulletin', fileSize: clientPayload.fileSize || null }),
-        };
-      },
-      onUploadCompleted: async ({ blob, tokenPayload }) => {
-        const { filename, fileSize } = tokenPayload ? JSON.parse(tokenPayload) : {};
-        await setBulletin({
-          url: blob.url,
-          pathname: blob.pathname,
-          filename: filename || blob.pathname,
-          mimeType: blob.contentType || '',
-          fileSize,
-        });
-        notifyDisplays();
-      },
-    });
-    res.json(jsonResponse);
-  } catch (error) {
-    console.error(error);
-    res.status(400).json({ error: error.message });
-  }
-});
+// PIN check happens in a small middleware *before* express.raw() below, not inside the handler -
+// so a request with a bad PIN is rejected before its body is even read, rather than after
+// buffering up to BULLETIN_MAX_BYTES of a request nobody's going to use.
+app.post(
+  '/api/office/bulletin/upload',
+  (req, res, next) => {
+    if (!validateOfficePin(req, res)) return;
+    next();
+  },
+  express.raw({ type: () => true, limit: BULLETIN_MAX_BYTES + 64 * 1024 }),
+  async (req, res) => {
+    try {
+      const mimeType = (req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
+      if (!BULLETIN_ALLOWED_MIME_TYPES.has(mimeType)) {
+        return res.status(400).json({ error: 'Unsupported file type - upload an image (JPG/PNG/GIF/WEBP) or a PDF.' });
+      }
+      if (!Buffer.isBuffer(req.body) || !req.body.length) {
+        return res.status(400).json({ error: 'No file data received.' });
+      }
+      if (req.body.length > BULLETIN_MAX_BYTES) {
+        return res.status(413).json({ error: `That file is too large (max ${Math.round(BULLETIN_MAX_BYTES / (1024 * 1024))}MB).` });
+      }
+      const rawName = req.headers['x-filename'] || 'bulletin';
+      let filename;
+      try {
+        filename = decodeURIComponent(rawName);
+      } catch (error) {
+        filename = rawName;
+      }
+      filename = filename.slice(0, 255);
 
-// Confirms an upload the office browser just completed and saves its pointer immediately, instead
-// of relying solely on the onUploadCompleted webhook above. That webhook comes from Vercel's own
-// Blob service calling back into this deployment - it can be delayed relative to the browser's own
-// upload finishing, or (on a preview deployment with Deployment Protection enabled) blocked
-// outright, in which case office-bulletin.html would show nothing uploaded right after a genuinely
-// successful upload. Calling this directly from the same authenticated browser that just did the
-// upload doesn't depend on that callback arriving at all. onUploadCompleted is left in place as a
-// harmless backup - setBulletin() is just an overwrite with the same values if this already ran.
-app.post('/api/office/bulletin/finalize', async (req, res) => {
-  if (!validateOfficePin(req, res)) return;
-  try {
-    const { url, pathname, filename, mimeType, fileSize } = req.body || {};
-    if (typeof url !== 'string' || !/^https:\/\/[^/]+\.blob\.vercel-storage\.com\//.test(url)) {
-      throw new Error('Invalid blob URL.');
+      const blob = await put(`bulletin/${Date.now()}-${filename}`, req.body, {
+        access: 'public',
+        contentType: mimeType,
+        addRandomSuffix: true,
+      });
+      await setBulletin({ url: blob.url, pathname: blob.pathname, filename, mimeType, fileSize: req.body.length });
+      notifyDisplays();
+      res.json({ ok: true });
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ error: error.message });
     }
-    if (typeof pathname !== 'string' || !pathname.startsWith('bulletin/')) {
-      throw new Error('Invalid blob pathname.');
-    }
-    if (!BULLETIN_ALLOWED_MIME_TYPES.has(mimeType)) {
-      throw new Error('Unsupported file type.');
-    }
-    await setBulletin({ url, pathname, filename: filename || pathname, mimeType, fileSize: Number(fileSize) || null });
-    notifyDisplays();
-    res.json({ ok: true });
-  } catch (error) {
-    console.error(error);
-    res.status(400).json({ error: error.message });
   }
-});
+);
 
 app.delete('/api/office/bulletin', async (req, res) => {
   if (!validateOfficePin(req, res)) return;
@@ -1605,6 +1561,18 @@ app.get(['/current', '/from-school', '/pri-dismissal', '/friday-dismissal', '/bu
 
 app.get('/', (req, res) => {
   res.redirect('/current');
+});
+
+// Only meaningfully reachable via express.raw()'s own limit on POST /api/office/bulletin/upload
+// (a request declaring, or turning out to be, more than BULLETIN_MAX_BYTES) - without this,
+// Express's default error handler would send an HTML page instead of the JSON error the office
+// bulletin page expects to parse.
+app.use((err, req, res, next) => {
+  if (err && err.type === 'entity.too.large') {
+    return res.status(413).json({ error: `That file is too large (max ${Math.round(BULLETIN_MAX_BYTES / (1024 * 1024))}MB).` });
+  }
+  console.error(err);
+  res.status(500).json({ error: 'Unexpected server error.' });
 });
 
 if (require.main === module) {
