@@ -71,7 +71,7 @@
     </main>
 
     <script type="module">
-      import { uploadPresigned } from '/vendor/vercel-blob-client.js';
+      import { upload } from '/vendor/vercel-blob-client.js';
 
       let officePin = window.localStorage.getItem('tbyOfficePin') || '';
       const MAX_BYTES = 25 * 1024 * 1024;
@@ -190,12 +190,11 @@
         progressWrap.classList.remove('hidden');
         progressFill.style.width = '0%';
 
-        // The actual upload goes through uploadPresigned() (below), which is the SDK's own
-        // sanctioned client for this flow - but its errors, like upload()'s, collapse every
-        // failure reason (wrong PIN, unsupported type, a Blob-store auth problem) into the same
-        // generic message. So the exact same request is made manually first, purely to read the
-        // real server error if there is one; issueSignedToken() has no side effects, so doing this
-        // twice is harmless.
+        // The actual upload goes through upload() (below), which is the SDK's own sanctioned
+        // client for this flow - but its errors collapse every failure reason (wrong PIN,
+        // unsupported type, a Blob-store auth problem) into the same generic message. So the
+        // exact same request is made manually first, purely to read the real server error if
+        // there is one; generating a token has no side effects, so doing this twice is harmless.
         const pathname = `bulletin/${Date.now()}-${file.name}`;
         const clientPayload = JSON.stringify({ pin: officePin, mimeType: file.type, filename: file.name, fileSize: file.size });
         try {
@@ -203,7 +202,7 @@
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              type: 'blob.generate-presigned-url',
+              type: 'blob.generate-client-token',
               payload: {
                 pathname,
                 callbackUrl: `${window.location.origin}/api/office/bulletin/upload`,
@@ -215,7 +214,7 @@
           const preflightData = await preflight.json().catch(() => ({}));
           if (!preflight.ok) throw new Error(preflightData.error || 'Could not start the upload.');
 
-          const blob = await uploadPresigned(pathname, file, {
+          const blob = await upload(pathname, file, {
             access: 'public',
             handleUploadUrl: '/api/office/bulletin/upload',
             contentType: file.type,

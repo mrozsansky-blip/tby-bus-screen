@@ -61,17 +61,23 @@ ADMIN_SECRET=secret for /api/admin/* routes (setup.html, sync, import)
 CRON_SECRET=secret the nightly export cron authenticates with
 AIRTABLE_TOKEN=your Airtable personal access token
 AIRTABLE_BASE_ID=appYCWLjqODndV4n2
+BLOB_READ_WRITE_TOKEN=from the Blob store's own page - see below
 ```
 
 The Bulletin screen's file upload (see "Bulletin screen" in
-`SETUP-NOTES.md`) needs a Vercel Blob store connected to this project - it
-isn't something you set yourself as an env var. In the Vercel dashboard:
+`SETUP-NOTES.md`) needs a Vercel Blob store connected to this project:
 **Project → Storage → Create Database → Blob**, then connect it to this
-project; Vercel adds whatever env vars that connection needs (typically
-`BLOB_STORE_ID` and `BLOB_WEBHOOK_PUBLIC_KEY` - the app authenticates to
-Blob storage via Vercel's OIDC token, injected automatically, not a static
-token) automatically. Without it, `/office/bulletin` uploads fail. If you
-connect the store *after* a deployment already built, redeploy - env vars
+project. That alone gets you `BLOB_STORE_ID` and `BLOB_WEBHOOK_PUBLIC_KEY`
+automatically (Vercel's newer, OIDC-based connection - no static token), but
+this app also needs an actual `BLOB_READ_WRITE_TOKEN`, because its upload
+flow has to PUT files to a plain storage CDN domain rather than `vercel.com`
+(some school/office networks block or break TLS to `vercel.com`
+specifically - see "Bulletin screen" in `SETUP-NOTES.md` for the full
+story), and that only works with a real token. To get one: open the Blob
+store's own page (Storage → the store, not the project) and look for a
+`.env.local` tab next to "Quickstart" showing a copyable
+`BLOB_READ_WRITE_TOKEN=...` value; add that to the project's environment
+variables (Production, Preview, and Development) and redeploy - env vars
 only apply to deployments built after they're added.
 
 Optional environment variables:
