@@ -217,28 +217,53 @@ needs to support. So the file itself never passes through this app's API in
 either direction:
 
 - **Upload** - `/office/bulletin` uploads straight from the office browser to
-  Vercel Blob storage using `@vercel/blob`'s client-upload flow. The browser
-  loads `/vendor/vercel-blob-client.js` (a pre-bundled browser build of
-  `@vercel/blob/client` - the published package imports Node builtins that a
-  plain `<script type="module">` can't resolve on its own, and this repo has
-  no bundler/build step to do that resolution for it; regenerate it after
-  upgrading `@vercel/blob` with `npm run build:blob-client`), then calls
-  `upload()`, which POSTs to `/api/office/bulletin/upload` for a short-lived
-  upload token before PUTing the file directly to Blob storage. That route
-  handles two things via `handleUpload()`:
-  - **Generating the token** - the only place the office PIN is actually
-    checked (it travels inside `clientPayload`, since the real upload never
-    reaches this server to send an `x-office-pin` header), and where file
-    type/size are constrained (`BULLETIN_ALLOWED_MIME_TYPES`,
-    `BULLETIN_MAX_BYTES`).
+  Vercel Blob storage using `@vercel/blob`'s *presigned-URL* client-upload
+  flow (`issueSignedToken()` / `handleUploadPresigned()` server-side,
+  `uploadPresigned()` client-side) - the OIDC-compatible counterpart to the
+  package's older client-token flow (`generateClientTokenFromReadWriteToken`
+  / `handleUpload`). That older flow hard-requires a static
+  `BLOB_READ_WRITE_TOKEN` with no fallback, which fails outright on a store
+  connected the newer way (`BLOB_STORE_ID` + `BLOB_WEBHOOK_PUBLIC_KEY`, no
+  static token - what a Blob store connects as by default now). The
+  presigned-URL flow instead goes through `resolveBlobAuth()`, which tries
+  OIDC (Vercel's automatic `VERCEL_OIDC_TOKEN` + `BLOB_STORE_ID`) before
+  falling back to `BLOB_READ_WRITE_TOKEN` - so it works with either kind of
+  store connection, and needs no env var of its own beyond what connecting
+  the store already added.
+
+  The browser loads `/vendor/vercel-blob-client.js` (a pre-bundled browser
+  build of `@vercel/blob/client` - the published package imports Node
+  builtins that a plain `<script type="module">` can't resolve on its own,
+  and this repo has no bundler/build step to do that resolution for it;
+  regenerate it after upgrading `@vercel/blob` with `npm run
+  build:blob-client`), then calls `uploadPresigned()`, which POSTs to
+  `/api/office/bulletin/upload` for a short-lived presigned upload URL before
+  PUTing the file directly to Blob storage. That route handles two things via
+  `handleUploadPresigned()`:
+  - **Generating the presigned URL** - the only place the office PIN is
+    actually checked (it travels inside `clientPayload`, since the real
+    upload never reaches this server to send an `x-office-pin` header), and
+    where file type/size are constrained (`BULLETIN_ALLOWED_MIME_TYPES`,
+    `BULLETIN_MAX_BYTES`, passed to `issueSignedToken()`).
   - **The upload-completed webhook** - Vercel's Blob service calls this same
     route after the browser's PUT succeeds, so the app can save the file's
     URL into Turso (`bulletin_screen` table - just a pointer: URL, filename,
-    mime type, size, upload time, not the file itself). `handleUpload()`
-    verifies this call is genuinely from Vercel (`x-vercel-signature`) before
-    trusting it, so it needs no PIN check of its own.
+    mime type, size, upload time, not the file itself).
+    `handleUploadPresigned()` verifies this call is genuinely from Vercel
+    (Ed25519 signature over `x-vercel-signature`, using
+    `BLOB_WEBHOOK_PUBLIC_KEY`) before trusting it, so it needs no PIN check
+    of its own.
   - Uploading a new file deletes the previous one from Blob storage
     (`del()`), since only one is ever live.
+
+  `office-bulletin.html`'s upload handler makes the "generate a presigned
+  URL" request itself first (before calling `uploadPresigned()`, which would
+  make the same request again) purely to read the real error message if
+  something goes wrong - `uploadPresigned()`/`upload()` collapse every
+  failure reason from that step into the same generic error, which is
+  useless for telling a wrong PIN apart from a Blob-store auth problem.
+  `issueSignedToken()` has no side effects, so making that request twice is
+  harmless.
 - **Display** - the public `/bulletin` page (and `/current`, when it
   resolves to bulletin) reads the pointer from `GET /api/bulletin` (no PIN -
   it's the same public endpoint the office page's "current file" panel

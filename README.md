@@ -61,14 +61,18 @@ ADMIN_SECRET=secret for /api/admin/* routes (setup.html, sync, import)
 CRON_SECRET=secret the nightly export cron authenticates with
 AIRTABLE_TOKEN=your Airtable personal access token
 AIRTABLE_BASE_ID=appYCWLjqODndV4n2
-BLOB_READ_WRITE_TOKEN=auto-added by Vercel once a Blob store is connected
 ```
 
-`BLOB_READ_WRITE_TOKEN` backs the Bulletin screen's file upload (see
-"Bulletin screen" in `SETUP-NOTES.md`) - it isn't something you set
-yourself. In the Vercel dashboard: **Project → Storage → Create Database →
-Blob**, then connect it to this project; Vercel adds the env var
-automatically. Without it, `/office/bulletin` uploads fail.
+The Bulletin screen's file upload (see "Bulletin screen" in
+`SETUP-NOTES.md`) needs a Vercel Blob store connected to this project - it
+isn't something you set yourself as an env var. In the Vercel dashboard:
+**Project → Storage → Create Database → Blob**, then connect it to this
+project; Vercel adds whatever env vars that connection needs (typically
+`BLOB_STORE_ID` and `BLOB_WEBHOOK_PUBLIC_KEY` - the app authenticates to
+Blob storage via Vercel's OIDC token, injected automatically, not a static
+token) automatically. Without it, `/office/bulletin` uploads fail. If you
+connect the store *after* a deployment already built, redeploy - env vars
+only apply to deployments built after they're added.
 
 Optional environment variables:
 

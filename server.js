@@ -2,8 +2,8 @@ const express = require('express');
 const path = require('path');
 const { randomUUID } = require('crypto');
 const { createClient } = require('@libsql/client');
-const { del } = require('@vercel/blob');
-const { handleUpload } = require('@vercel/blob/client');
+const { del, issueSignedToken } = require('@vercel/blob');
+const { handleUploadPresigned } = require('@vercel/blob/client');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -1197,22 +1197,32 @@ app.get('/api/bulletin', async (req, res) => {
   }
 });
 
-// Backs the office bulletin page's upload button, via @vercel/blob's client-upload flow
-// (public/vendor/vercel-blob-client.js on the browser side): the file itself is PUT straight from
-// the office browser to Vercel Blob storage, never through this server (see the BULLETIN_MAX_BYTES
-// comment near the top of this file for why). This route only ever sees two small JSON calls:
-//   1. "generate a token" - before the browser starts the upload. This is the only place the
-//      office PIN can be checked (it travels in clientPayload, since the real upload request
-//      never reaches us), and where the file type/size are constrained server-side.
+// Backs the office bulletin page's upload button via @vercel/blob's *presigned-URL* client-upload
+// flow (public/vendor/vercel-blob-client.js on the browser side): the file itself is PUT straight
+// from the office browser to Vercel Blob storage, never through this server (see the
+// BULLETIN_MAX_BYTES comment near the top of this file for why). This is the OIDC-compatible
+// counterpart to @vercel/blob's older client-token flow (handleUpload/generateClientTokenFrom-
+// ReadWriteToken) - that older flow hard-requires a static BLOB_READ_WRITE_TOKEN with no OIDC
+// fallback, which fails outright on a store connected the newer way (BLOB_STORE_ID +
+// BLOB_WEBHOOK_PUBLIC_KEY, no static token) - see issueSignedToken()'s doc comment in
+// @vercel/blob's types. handleUploadPresigned() and issueSignedToken() both go through
+// resolveBlobAuth(), which tries OIDC (VERCEL_OIDC_TOKEN + BLOB_STORE_ID) before falling back to
+// BLOB_READ_WRITE_TOKEN, so this works with either kind of store connection.
+//
+// This route only ever sees two small JSON calls:
+//   1. "generate a presigned URL" - before the browser starts the upload. This is the only place
+//      the office PIN can be checked (it travels in clientPayload, since the real upload request
+//      never reaches us), and where the file type/size are constrained (via issueSignedToken()).
 //   2. "upload completed" - a webhook Vercel's own Blob service sends after the PUT above
-//      succeeds. handleUpload() verifies this call is genuinely from Vercel (via the
-//      x-vercel-signature header) before invoking onUploadCompleted, so it needs no PIN check.
+//      succeeds. handleUploadPresigned() verifies this call is genuinely from Vercel (via
+//      BLOB_WEBHOOK_PUBLIC_KEY, Ed25519 over x-vercel-signature) before invoking
+//      onUploadCompleted, so it needs no PIN check.
 app.post('/api/office/bulletin/upload', async (req, res) => {
   try {
-    const jsonResponse = await handleUpload({
+    const jsonResponse = await handleUploadPresigned({
       body: req.body,
       request: req,
-      onBeforeGenerateToken: async (pathname, clientPayloadJson) => {
+      getSignedToken: async (pathname, clientPayloadJson) => {
         let clientPayload = {};
         try {
           clientPayload = JSON.parse(clientPayloadJson || '{}');
@@ -1226,14 +1236,23 @@ app.post('/api/office/bulletin/upload', async (req, res) => {
         if (Number(clientPayload.fileSize) > BULLETIN_MAX_BYTES) {
           throw new Error('That file is too large (max 25MB).');
         }
-        return {
+        const token = await issueSignedToken({
+          pathname,
+          operations: ['put'],
           allowedContentTypes: [...BULLETIN_ALLOWED_MIME_TYPES],
           maximumSizeInBytes: BULLETIN_MAX_BYTES,
-          addRandomSuffix: true,
-          // PutBlobResult (what onUploadCompleted receives as `blob`) carries no file-size field,
-          // so the size the browser already knows is round-tripped here to store alongside the
-          // pointer for display on the office bulletin page.
-          tokenPayload: JSON.stringify({ filename: clientPayload.filename || 'bulletin', fileSize: clientPayload.fileSize || null }),
+        });
+        return {
+          token,
+          urlOptions: {
+            allowedContentTypes: [...BULLETIN_ALLOWED_MIME_TYPES],
+            maximumSizeInBytes: BULLETIN_MAX_BYTES,
+            addRandomSuffix: true,
+            // PutBlobResult (what onUploadCompleted receives as `blob`) carries no file-size
+            // field, so the size the browser already knows is round-tripped here to store
+            // alongside the pointer for display on the office bulletin page.
+            tokenPayload: JSON.stringify({ filename: clientPayload.filename || 'bulletin', fileSize: clientPayload.fileSize || null }),
+          },
         };
       },
       onUploadCompleted: async ({ blob, tokenPayload }) => {
