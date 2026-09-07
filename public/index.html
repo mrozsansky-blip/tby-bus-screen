@@ -137,7 +137,10 @@
       loadRoutes();
       connectInstantRefresh();
       setInterval(updateClock, 1000);
-      setInterval(() => loadRoutes(true), 10000);
+      // Safety net only - the live SSE connection above pushes refreshes instantly on every
+      // status change. This just re-syncs periodically in case that connection silently drops
+      // (e.g. a network blip an EventSource doesn't notice), so it doesn't need to run often.
+      setInterval(() => loadRoutes(true), 90000);
     </script>
   </body>
 </html>
