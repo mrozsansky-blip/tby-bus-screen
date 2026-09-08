@@ -93,6 +93,36 @@
             </article>
           `;
         }).join('');
+
+        applyBusNameColors(routes);
+      }
+
+      // Colors each bus's name banner to match its actual bus color (route.color, e.g. "Red",
+      // "Blue", set on /setup.html or synced from Airtable's "Bus Color" field) instead of the
+      // flat gray default. Applied after the fact via the CSS OM (not string-interpolated into the
+      // HTML above) so an unset or bogus color value is simply ignored by the browser rather than
+      // risking a broken/injected style attribute.
+      function applyBusNameColors(routes) {
+        const cards = document.querySelectorAll('#bus-grid .bus-card');
+        routes.forEach((route, index) => {
+          const nameEl = cards[index] ? cards[index].querySelector('.bus-name') : null;
+          if (!nameEl) return;
+          const color = String(route.color || '').trim();
+          if (!color) return;
+          nameEl.style.backgroundColor = color;
+          nameEl.style.color = pickReadableTextColor(nameEl);
+        });
+      }
+
+      // Picks black or white text based on the banner's actual rendered background (read back via
+      // getComputedStyle, so this works the same whether route.color was a hex code or a named
+      // color like "Yellow") - keeps light bus colors from rendering as white-on-white.
+      function pickReadableTextColor(el) {
+        const rgb = getComputedStyle(el).backgroundColor.match(/[\d.]+/g);
+        if (!rgb) return '';
+        const [r, g, b] = rgb.map(Number);
+        const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+        return luminance > 0.6 ? '#111' : '#fff';
       }
 
       function escapeHtml(value) {

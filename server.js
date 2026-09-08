@@ -421,6 +421,7 @@ function mapRouteRow(row, office = false, textSummary = null) {
   return {
     id: row.route_id,
     name: row.display_name || row.route_code || 'Bus',
+    color: row.color || '',
     status: row.current_status || 'Waiting',
     spot: row.spot_name || '',
     spotId: row.parking_spot_id || '',
@@ -429,6 +430,7 @@ function mapRouteRow(row, office = false, textSummary = null) {
     lastArrival: row.arrival_time || '',
     lastDeparture: row.departure_time || '',
     lastEvent: row.last_event_time || '',
+    company: office ? (row.company || '') : undefined,
     morningArrived: office ? row.current_status === 'Arrived' : undefined,
     textsSentToday: office ? (textSummary?.textsSentToday || 0) : undefined,
     lastTextMessage: office ? (textSummary?.lastMessage || '') : undefined,
@@ -488,6 +490,8 @@ async function fetchRoutesForScreen(screen, options = {}) {
       routes.id AS route_id,
       routes.route_code,
       routes.display_name,
+      routes.color,
+      routes.company,
       routes.workflow_type,
       routes.sort_order,
       daily_status.current_status,
@@ -870,7 +874,10 @@ async function routeDepartureTime(routeId, screen) {
 
 // customBody lets office staff skip the template list and type a one-off message instead - it
 // still goes through renderTemplate, so {name}/{time} work in it exactly like a saved template.
-async function previewBusNotice(routeId, templateId, screen, customBody) {
+// extraVars carries office-entered fields with no fixed value on the route itself - today that's
+// {company}/{busNumber}, typed in on the PRI Dismissal screen where the actual carrier and bus
+// number vary day to day instead of being a fixed property of the route.
+async function previewBusNotice(routeId, templateId, screen, customBody, extraVars = {}) {
   const trimmedCustom = (customBody || '').trim();
   const [{ displayName, routeCode, groupName, airtableRecordId }, template, departureTime] = await Promise.all([
     busDepartureRouteInfo(routeId),
@@ -878,7 +885,8 @@ async function previewBusNotice(routeId, templateId, screen, customBody) {
     routeDepartureTime(routeId, screen),
   ]);
   const time = formatSchoolTime(departureTime ? new Date(departureTime) : new Date());
-  const message = renderTemplate(trimmedCustom || template.body, { name: displayName, time });
+  const vars = { name: displayName, time, company: extraVars.company || '', busNumber: extraVars.busNumber || '' };
+  const message = renderTemplate(trimmedCustom || template.body, vars);
   const result = groupName
     ? await textgridMcpCall('preview_group_sms_send', { message, groupName })
     : await textgridMcpCall('preview_bus_route_sms_send', { message, airtableRecordId });
@@ -1161,7 +1169,13 @@ app.post('/api/office/route/:recordId/next', async (req, res) => {
 app.post('/api/office/route/:recordId/notify/preview', async (req, res) => {
   if (!validateOfficePin(req, res)) return;
   try {
-    res.json(await previewBusNotice(req.params.recordId, req.body?.templateId || '', req.body?.screen || '', req.body?.customMessage || ''));
+    res.json(await previewBusNotice(
+      req.params.recordId,
+      req.body?.templateId || '',
+      req.body?.screen || '',
+      req.body?.customMessage || '',
+      { company: req.body?.company || '', busNumber: req.body?.busNumber || '' }
+    ));
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: error.message });

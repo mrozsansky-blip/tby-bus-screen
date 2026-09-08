@@ -81,7 +81,10 @@
         These are the message choices office staff pick from when they click "Text Parents" on a
         dismissal screen. Use <code>{name}</code> for the route's display name and
         <code>{time}</code> for the time the bus actually departed (falls back to the current time
-        if it hasn't departed yet, e.g. for a "not here yet" message).
+        if it hasn't departed yet, e.g. for a "not here yet" message). On the PRI Dismissal screen,
+        office staff can also type in a <code>{company}</code> and <code>{busNumber}</code> for
+        that send - use those tokens in a template to include them (they're blank on every other
+        screen, since only PRI buses vary carrier/number day to day).
       </p>
       <table id="templateTable" class="group-table" hidden>
         <thead>

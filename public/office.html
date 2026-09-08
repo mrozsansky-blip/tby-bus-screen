@@ -47,6 +47,10 @@
         </div>
       </section>
 
+      <section id="bulk-actions" class="bulk-actions hidden">
+        <button type="button" id="text-all-departed" class="mini-btn bulk-notify-btn">Text "Bus Left" to All Departed Buses</button>
+      </section>
+
       <section id="message" class="message hidden"></section>
       <section id="grid" class="route-grid compact"></section>
     </main>
@@ -55,6 +59,13 @@
       <div class="modal-box">
         <h3 id="template-modal-title">Text Parents</h3>
         <p class="modal-subtitle" id="template-modal-subtitle"></p>
+        <div id="primary-bus-fields" class="primary-bus-fields hidden">
+          <label for="bus-company-input">Bus company</label>
+          <input id="bus-company-input" type="text" placeholder="e.g. ABC Bus Co." />
+          <label for="bus-number-input">Bus number</label>
+          <input id="bus-number-input" type="text" placeholder="e.g. 42" />
+          <p class="primary-bus-hint">Use <code>{company}</code> and <code>{busNumber}</code> in a template or custom message to include these - PRI buses vary day to day.</p>
+        </div>
         <div id="template-modal-list"></div>
         <div class="custom-message-box">
           <label for="custom-message-input">Or write a custom message</label>
@@ -80,6 +91,7 @@
       let officePin = window.localStorage.getItem('tbyOfficePin') || '';
       let currentScreen = getScreenKey();
       let currentSpots = [];
+      let currentRoutes = [];
       let busy = false;
       let loading = false;
       let loadController = null;
@@ -112,12 +124,15 @@
       function showPinBox() {
         document.getElementById('pin-box').classList.remove('hidden');
         document.getElementById('override-bar').classList.add('hidden');
+        document.getElementById('bulk-actions').classList.add('hidden');
         document.getElementById('grid').innerHTML = '';
       }
 
       function hidePinBox() {
         document.getElementById('pin-box').classList.add('hidden');
         document.getElementById('override-bar').classList.remove('hidden');
+        // Morning is arrival only - there's nothing to text a departed bus about there.
+        document.getElementById('bulk-actions').classList.toggle('hidden', currentScreen === 'morning');
       }
 
       function formatTime(value) {
@@ -208,6 +223,35 @@
             </article>
           `;
         }).join('');
+
+        applyBusNameColors(routes);
+      }
+
+      // Colors each bus's name to match its actual bus color (route.color), same as the student
+      // screen - applied via the CSS OM after the grid is built, so an unset or bogus color value
+      // is just ignored by the browser instead of risking a broken style attribute.
+      function applyBusNameColors(routes) {
+        const cards = document.querySelectorAll('#grid .route-card');
+        routes.forEach((route, index) => {
+          const nameEl = cards[index] ? cards[index].querySelector('.bus-name') : null;
+          if (!nameEl) return;
+          const color = String(route.color || '').trim();
+          if (!color) return;
+          nameEl.style.backgroundColor = color;
+          nameEl.style.color = pickReadableTextColor(nameEl);
+          nameEl.classList.add('has-color');
+        });
+      }
+
+      // Picks black or white text based on the banner's actual rendered background (read back via
+      // getComputedStyle, so this works the same whether route.color was a hex code or a named
+      // color like "Yellow") - keeps light bus colors from rendering unreadable.
+      function pickReadableTextColor(el) {
+        const rgb = getComputedStyle(el).backgroundColor.match(/[\d.]+/g);
+        if (!rgb) return '';
+        const [r, g, b] = rgb.map(Number);
+        const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+        return luminance > 0.6 ? '#111' : '#fff';
       }
 
       async function api(path, options = {}) {
@@ -245,7 +289,8 @@
           const data = await api(`/api/office/${currentScreen}`, { controller: loadController });
           hidePinBox();
           currentSpots = data.spots || [];
-          renderRoutes(data.routes || []);
+          currentRoutes = data.routes || [];
+          renderRoutes(currentRoutes);
           document.getElementById('updated').textContent = formatUpdated(data.updatedAt);
         } catch (error) {
           if (error.name === 'AbortError') return;
@@ -357,6 +402,16 @@
         document.getElementById('custom-message-input').value = '';
         document.getElementById('template-modal-title').textContent = `Text Parents: ${routeName}`;
         document.getElementById('template-modal-subtitle').textContent = 'Choose a message to send.';
+        // PRI buses aren't a fixed route/company/number the way From School buses are - the actual
+        // carrier bus shows up differently each day, so only that screen gets fields to type it in
+        // for this send (see {company}/{busNumber} in renderTemplate/previewBusNotice).
+        document.getElementById('primary-bus-fields').classList.toggle('hidden', currentScreen !== 'pri-dismissal');
+        // Bus company is already synced in from Airtable's "Bus Company" field where set - prefill
+        // it so staff usually only need to type the bus number. Bus number has no Airtable source
+        // (PRI carriers don't report it ahead of time), so that field always starts blank.
+        const route = currentRoutes.find((r) => r.id === recordId);
+        document.getElementById('bus-company-input').value = (route && route.company) || '';
+        document.getElementById('bus-number-input').value = '';
         list.innerHTML = '<p class="modal-subtitle">Loading templates...</p>';
         openModal(modal);
         try {
@@ -387,10 +442,20 @@
       }
 
       // Client-side approximation just for the picker preview text - the server renders the exact
-      // message (with the real send-time timestamp, in SCHOOL_TIME_ZONE) in the confirm dialog
-      // before anything sends. This is close enough to match at a glance, but isn't authoritative.
+      // message (with the real send-time timestamp, in SCHOOL_TIME_ZONE, and the entered company/
+      // bus number) in the confirm dialog before anything sends. This is close enough to match at
+      // a glance, but isn't authoritative.
       function renderPreviewText(body, routeName, timeText) {
         return String(body || '').replace(/\{name\}/g, routeName).replace(/\{time\}/g, timeText);
+      }
+
+      // Office-entered fields with no fixed value on the route itself - only shown/used on the PRI
+      // Dismissal screen (see openTemplatePicker). Harmless to send blank from any other screen.
+      function getPrimaryBusFields() {
+        return {
+          company: document.getElementById('bus-company-input').value.trim(),
+          busNumber: document.getElementById('bus-number-input').value.trim(),
+        };
       }
 
       // Shared by the template picker and the custom-message box: preview, confirm, send. Only the
@@ -398,7 +463,7 @@
       async function previewConfirmAndSend(recordId, routeName, previewBody, dupWarning = '') {
         const preview = await api(`/api/office/route/${recordId}/notify/preview`, {
           method: 'POST',
-          body: JSON.stringify({ ...previewBody, screen: currentScreen }),
+          body: JSON.stringify({ ...previewBody, screen: currentScreen, ...getPrimaryBusFields() }),
         });
         const groupSuffix = preview.groupName ? ` (texting group "${preview.groupName}")` : '';
         if (!preview.count) {
@@ -451,6 +516,84 @@
         }
       }
 
+      // "Text Parents" one bus at a time is fine most days, but at the end of dismissal there can
+      // be a dozen buses that already left - this sends the "Bus Left" template to every bus on
+      // this screen currently marked Departed, in one confirm instead of one per bus. Buses that
+      // already got that exact template today are skipped (same dup-avoidance the per-bus button
+      // warns about), and it never touches a bus that hasn't actually departed.
+      async function sendBusLeftToAllDeparted() {
+        if (busy) return;
+        busy = true;
+        try {
+          const departedRoutes = currentRoutes.filter((route) => route.status === 'Departed');
+          if (!departedRoutes.length) {
+            showMessage('No departed buses to text right now.', 'info');
+            return;
+          }
+
+          const templatesData = await api('/api/office/templates');
+          const templates = templatesData.templates || [];
+          const busLeftTemplate = templates.find((t) => t.id === 'bus-left')
+            || templates.find((t) => (t.name || '').trim().toLowerCase() === 'bus left');
+          if (!busLeftTemplate) {
+            showMessage('No "Bus Left" text template found. Add one on /setup.html.', 'error');
+            return;
+          }
+
+          const sentChecks = await Promise.all(
+            departedRoutes.map((route) => api(`/api/office/route/${route.id}/sent-templates-today`).catch(() => ({ sent: [] })))
+          );
+          const toSend = [];
+          const alreadySent = [];
+          departedRoutes.forEach((route, index) => {
+            const sentAlready = (sentChecks[index].sent || []).some((entry) => entry.templateId === busLeftTemplate.id);
+            (sentAlready ? alreadySent : toSend).push(route);
+          });
+
+          if (!toSend.length) {
+            showMessage(`All ${departedRoutes.length} departed bus(es) were already texted "${busLeftTemplate.name}" today.`, 'info');
+            return;
+          }
+
+          const skipNote = alreadySent.length
+            ? `\n\n(Skipping ${alreadySent.length} already texted today: ${alreadySent.map((r) => r.name).join(', ')})`
+            : '';
+          const confirmed = window.confirm(
+            `Text "${busLeftTemplate.name}" to parents on ${toSend.length} departed bus(es)?\n\n${toSend.map((r) => r.name).join(', ')}${skipNote}`
+          );
+          if (!confirmed) return;
+
+          let succeeded = 0;
+          const problems = [];
+          for (const route of toSend) {
+            try {
+              const preview = await api(`/api/office/route/${route.id}/notify/preview`, {
+                method: 'POST',
+                body: JSON.stringify({ templateId: busLeftTemplate.id, screen: currentScreen }),
+              });
+              if (!preview.count) { problems.push(`${route.name} (no text-able parent numbers)`); continue; }
+              await api(`/api/office/route/${route.id}/notify/send`, {
+                method: 'POST',
+                body: JSON.stringify({ screen: currentScreen, templateId: preview.templateId || busLeftTemplate.id, message: preview.message, confirmationToken: preview.confirmationToken }),
+              });
+              succeeded += 1;
+            } catch (error) {
+              problems.push(`${route.name} (${error.message})`);
+            }
+          }
+
+          showMessage(
+            `Texted "${busLeftTemplate.name}" to ${succeeded} of ${toSend.length} bus(es).${problems.length ? ` Problems: ${problems.join('; ')}` : ''}`,
+            problems.length ? 'error' : 'success'
+          );
+          await loadOffice(true);
+        } catch (error) {
+          showMessage(error.message, 'error');
+        } finally {
+          busy = false;
+        }
+      }
+
       function escapeHtml(value) {
         return String(value ?? '')
           .replace(/&/g, '&amp;')
@@ -487,6 +630,8 @@
         setOverride(screen);
         document.getElementById('override-buttons').classList.add('hidden');
       });
+
+      document.getElementById('text-all-departed').addEventListener('click', sendBusLeftToAllDeparted);
 
       document.getElementById('grid').addEventListener('click', (event) => {
         const statusTarget = event.target.closest('button[data-action="status"]');

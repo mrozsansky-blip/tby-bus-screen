@@ -154,6 +154,14 @@ h1 {
   line-height: 0.95;
   font-weight: 900;
   text-transform: uppercase;
+  border-radius: 8px;
+  padding: 2px 0;
+}
+
+/* Set only when the route has a color (route.color, via applyBusNameColor() in office.html) -
+   turns the name into a colored banner matching the bus, same as the student screen. */
+.bus-name.has-color {
+  padding: 2px 8px;
 }
 
 .status-pill {
@@ -318,6 +326,19 @@ button {
   padding: 7px 10px;
 }
 
+.bulk-actions {
+  margin: 10px 10px 0;
+}
+
+.bulk-notify-btn {
+  width: 100%;
+  padding: 12px;
+  border-radius: 12px;
+  background: var(--blue);
+  color: white;
+  font-size: 13px;
+}
+
 .message {
   margin: 10px 10px 0;
   padding: 10px 12px;
@@ -420,6 +441,36 @@ button {
   font-size: 11px;
   font-weight: 800;
   color: #92400e;
+}
+
+.primary-bus-fields {
+  margin-bottom: 14px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.primary-bus-fields label {
+  display: block;
+  margin: 8px 0 4px;
+  font-size: 12px;
+  font-weight: 900;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.primary-bus-fields label:first-child { margin-top: 0; }
+
+.primary-bus-hint {
+  margin: 8px 0 0;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.primary-bus-hint code {
+  background: var(--bg);
+  border-radius: 4px;
+  padding: 1px 4px;
 }
 
 .custom-message-box {
