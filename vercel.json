@@ -3,6 +3,14 @@
     {
       "path": "/api/cron/export-airtable",
       "schedule": "30 3 * * *"
+    },
+    {
+      "path": "/api/cron/morning-arrival-report",
+      "schedule": "15 14 * * 1-5"
+    },
+    {
+      "path": "/api/cron/morning-arrival-report",
+      "schedule": "15 15 * * 1-5"
     }
   ],
   "rewrites": [
