@@ -182,6 +182,36 @@ body {
   display: none;
 }
 
+/* Full-screen takeover for the Bulletin screen. Use a white background because some PDFs
+   (and some browser PDF viewers) leave the page background transparent; a black container made
+   ordinary black PDF text appear almost invisible on iPad/Safari. */
+.bulletin-view {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--white);
+  color-scheme: light;
+}
+
+.bulletin-media {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  border: 0;
+  background: var(--white);
+  color-scheme: light;
+}
+
+.bulletin-empty {
+  color: var(--black);
+  font-size: clamp(24px, 2.6vw, 48px);
+  font-weight: 800;
+  text-align: center;
+  padding: 0 40px;
+}
+
 @media (max-width: 1300px) {
   .bus-grid {
     grid-template-columns: repeat(4, 1fr);

@@ -183,3 +183,89 @@ Three unrelated `/office/*` bugs, fixed together:
 The "Text Parents" picker has a free-text box below the template list for a
 one-off message that doesn't need a saved template - see the "Text Parents"
 notices section above.
+
+# Bulletin screen
+
+`/bulletin` shows one uploaded image or PDF full-screen (announcements, a
+lunch menu, a flyer, etc) instead of the bus grid. It's managed from
+`/office/bulletin` - PIN-protected like the other office pages, but
+deliberately not on `/setup.html`, so any staff member with the office PIN
+can update it, not just whoever holds the admin secret. That page shows
+what's currently live and lets staff upload a replacement (image or PDF, up
+to 4MB) or remove it entirely. Only one file is ever live at a time -
+uploading a new one replaces it.
+
+**Display schedule** (`computeScheduledScreen()` in `server.js`, times in
+`SCHOOL_TIME_ZONE`):
+
+| Day | Bulletin | Then |
+| --- | --- | --- |
+| Mon-Thu | until 2:15 PM | PRI Dismissal until 3:30 PM, then From School Dismissal |
+| Fri | until 11:00 AM | Friday Dismissal |
+
+This runs on `/current` automatically, the same as the from-school/PRI/Friday
+switch already did. The office can also force the public screen to Bulletin
+at any other time via the "Change public screen…" override on any
+`/office/*` page (it's `bulletin` alongside the existing Auto/From
+School/PRI/Friday choices there) - same as forcing any other screen, it
+resets at midnight.
+
+**Storage.** The file itself lives in Vercel Blob storage, not Turso - only
+a pointer (URL + metadata) is stored here (`bulletin_screen` table: URL,
+pathname, filename, mime type, size, upload time).
+
+- **Upload** - `POST /api/office/bulletin/upload` (PIN-protected via
+  `x-office-pin`) takes the raw file bytes as its request body
+  (`express.raw()`, `Content-Type` = the file's real MIME type,
+  `x-filename` = the original filename, URI-encoded) and PUTs them to Blob
+  storage itself, server-side, via `put()`. `office-bulletin.html` sends the
+  file with `XMLHttpRequest` (used specifically for its upload-progress
+  events, which `fetch` doesn't expose) rather than any Blob SDK on the
+  client - the browser talks only to this app's own domain, never to
+  Vercel's infrastructure directly.
+
+  This wasn't the original design. Two earlier attempts had the office
+  browser PUT the file straight to Vercel Blob storage instead (first
+  `@vercel/blob`'s client-token flow, then its OIDC-compatible presigned-URL
+  flow), which would have allowed a 25MB limit instead of today's 4MB. Both
+  failed identically on the school's network: `net::ERR_ALPN_NEGOTIATION_
+  FAILED` against `vercel.com` (both flows' browser-to-storage `PUT`, it
+  turns out, actually routes through `vercel.com`'s control API regardless
+  of auth method - `@vercel/blob`'s `requestApi()` always targets
+  `defaultVercelBlobApiUrl = "https://vercel.com/api/blob"` unless
+  overridden via `VERCEL_BLOB_API_URL`). That's a TLS-level failure that
+  persisted even after `vercel.com` was allow-listed on the school's
+  network, consistent with the network doing HTTPS/SSL inspection that
+  specifically breaks ALPN negotiation for that host - not something fixable
+  from this app's code, and not something a plain website allow-list
+  resolves (that needs a specific SSL/TLS-decryption bypass for the host,
+  a separate setting in most content-filtering products). Routing the
+  upload through this server instead sidesteps the whole problem: the
+  browser only ever talks to this app's own domain (already known to work),
+  and this server's own outbound call to Vercel's API is unaffected by the
+  school's network entirely. The trade-off is `BULLETIN_MAX_BYTES` - Vercel
+  Functions hard-cap request bodies at 4.5MB, so the limit is set to 4MB to
+  leave headroom for HTTP overhead on top of the raw file bytes.
+
+  A small middleware checks the PIN *before* `express.raw()` runs, so a
+  request with a bad PIN is rejected before its body is even read, rather
+  than after buffering up to `BULLETIN_MAX_BYTES` of a request nobody's
+  going to use. `express.raw()`'s own `limit` throws if a request turns out
+  larger than that regardless of the PIN check; a small error-handling
+  middleware at the bottom of `server.js` turns that into the same JSON
+  error shape as every other endpoint, instead of Express's default HTML
+  error page.
+
+  Uploading a new file deletes the previous one from Blob storage (`del()`),
+  since only one is ever live.
+- **Display** - the public `/bulletin` page (and `/current`, when it
+  resolves to bulletin) reads the pointer from `GET /api/bulletin` (no PIN -
+  it's the same public endpoint the office page's "current file" panel
+  reads, and the Blob URL it returns is already a public CDN link with
+  nothing sensitive in it) and points an `<img>`/`<embed>` straight at that
+  URL - Vercel's CDN serves it directly, not this app.
+
+Both `put()` and `del()` go through `@vercel/blob`'s `resolveBlobAuth()`,
+which works with either an OIDC-connected store (`BLOB_STORE_ID` - what
+connecting a store adds by default now) or a static `BLOB_READ_WRITE_TOKEN`,
+since both are calls this *server* makes, not the browser.
