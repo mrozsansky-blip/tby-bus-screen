@@ -178,8 +178,15 @@ body {
   color: #900;
 }
 
+/* !important is deliberate here: .hidden is a utility class meant to always win regardless of what
+   else targets an element's `display` - without it, any component rule with equal specificity
+   declared later in this file (e.g. .bulletin-view below) wins by source order instead, so adding
+   `hidden` to that element does nothing and it stays visible. That's exactly what happened before
+   this rule had !important: the Bulletin screen's full-screen overlay (.bulletin-view, further
+   down, also sets `display`) could never actually be hidden once shown, so it sat there covering
+   the bus grid - a permanent white screen - instead of switching back at the scheduled time. */
 .hidden {
-  display: none;
+  display: none !important;
 }
 
 /* Full-screen takeover for the Bulletin screen. Use a white background because some PDFs

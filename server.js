@@ -396,8 +396,20 @@ async function clearBulletin() {
   }
 }
 
+// What the dismissal screen would be right now if the Bulletin screen didn't exist at all - the
+// schedule this app used before it. Used as a fallback (see chooseCurrentScreen()) whenever the
+// Bulletin window is active but there's no file to show, so a forgotten or still-broken upload
+// never blanks out the one thing this app absolutely has to show: which bus to get on.
+function computeDismissalScreen() {
+  const { weekday, hour, minute } = getSchoolNowParts();
+  if (weekday === 'Fri') return 'friday-dismissal';
+  const minutes = hour * 60 + minute;
+  const regularDismissal = 15 * 60 + 30; // 3:30 PM
+  return minutes < regularDismissal ? 'pri-dismissal' : 'from-school';
+}
+
 // Bulletin fills the slot before dismissal-related screens are relevant - it's what's on the
-// screen for most of the school day, then hands off to the regular dismissal schedule below.
+// screen for most of the school day, then hands off to the regular dismissal schedule above.
 function computeScheduledScreen() {
   const { weekday, hour, minute } = getSchoolNowParts();
   const minutes = hour * 60 + minute;
@@ -406,15 +418,24 @@ function computeScheduledScreen() {
     return minutes < fridayBulletinEnd ? 'bulletin' : 'friday-dismissal';
   }
   const bulletinEnd = 14 * 60 + 15; // 2:15 PM
-  const regularDismissal = 15 * 60 + 30; // 3:30 PM
   if (minutes < bulletinEnd) return 'bulletin';
-  return minutes < regularDismissal ? 'pri-dismissal' : 'from-school';
+  return computeDismissalScreen();
 }
 
 async function chooseCurrentScreen() {
   await ensureSchema();
   const override = await getScreenOverride();
-  return override || computeScheduledScreen();
+  if (override) return override;
+  const scheduled = computeScheduledScreen();
+  // The schedule says Bulletin, but if nothing has ever been successfully uploaded (or it was
+  // removed and not replaced), showing an empty slot instead of the bus screen would be strictly
+  // worse than Bulletin not existing - fall back to what would show without it. A manually-set
+  // Bulletin override (above) is left alone even with nothing uploaded - that's an explicit staff
+  // choice, not the automatic schedule guessing wrong.
+  if (scheduled === 'bulletin' && !(await getBulletin())) {
+    return computeDismissalScreen();
+  }
+  return scheduled;
 }
 
 async function normalizeScreen(screen) {
