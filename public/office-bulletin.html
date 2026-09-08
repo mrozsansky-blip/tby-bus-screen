@@ -128,8 +128,6 @@
           return;
         }
         try {
-          // /api/bulletin itself has no PIN check (see server.js) - ping first so a wrong PIN is
-          // caught here, not as a confusing failure when they try to upload.
           const pingResponse = await fetch('/api/office/ping', { cache: 'no-store', headers: { 'x-office-pin': officePin } });
           if (pingResponse.status === 401) {
             officePin = '';
@@ -164,7 +162,7 @@
         `;
       }
 
-      document.getElementById('upload-btn').addEventListener('click', () => {
+      document.getElementById('upload-btn').addEventListener('click', async () => {
         const input = document.getElementById('file-input');
         const file = input.files[0];
         if (!file) {
@@ -179,54 +177,90 @@
           showMessage(`That file is too big (max ${formatBytes(MAX_BYTES)}).`, 'error');
           return;
         }
-        uploadFile(file);
+        await uploadFile(file);
       });
 
-      // Uploaded straight to this app's own /api/office/bulletin/upload (which then forwards it to
-      // Blob storage server-side) rather than to Vercel Blob directly from the browser - see the
-      // comment on that route in server.js for why. XMLHttpRequest (not fetch) is used here
-      // specifically for its upload progress events, which fetch doesn't expose.
-      function uploadFile(file) {
+      function hasExpectedSignature(bytes, mimeType) {
+        if (mimeType === 'application/pdf') {
+          return bytes.length >= 4 && bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46; // %PDF
+        }
+        if (mimeType === 'image/jpeg') {
+          return bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+        }
+        if (mimeType === 'image/png') {
+          return bytes.length >= 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47 && bytes[4] === 0x0d && bytes[5] === 0x0a && bytes[6] === 0x1a && bytes[7] === 0x0a;
+        }
+        if (mimeType === 'image/gif') {
+          return bytes.length >= 6 && bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x38 && (bytes[4] === 0x37 || bytes[4] === 0x39) && bytes[5] === 0x61;
+        }
+        if (mimeType === 'image/webp') {
+          return bytes.length >= 12 && bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 && bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50;
+        }
+        return false;
+      }
+
+      // Read the selected file into an ArrayBuffer first, validate its real file signature,
+      // then send those exact bytes. This avoids relying on the browser's implicit File-body
+      // conversion and catches mislabeled/corrupt files before Blob ever receives them.
+      async function uploadFile(file) {
         const progressWrap = document.getElementById('progress-wrap');
         const progressFill = document.getElementById('progress-fill');
+        const uploadButton = document.getElementById('upload-btn');
+        uploadButton.disabled = true;
         progressWrap.classList.remove('hidden');
         progressFill.style.width = '0%';
 
-        const xhr = new XMLHttpRequest();
-        xhr.open('POST', '/api/office/bulletin/upload');
-        xhr.setRequestHeader('Content-Type', file.type);
-        xhr.setRequestHeader('x-office-pin', officePin);
-        xhr.setRequestHeader('x-filename', encodeURIComponent(file.name));
-        xhr.upload.onprogress = (event) => {
-          if (!event.lengthComputable) return;
-          progressFill.style.width = `${Math.round((event.loaded / event.total) * 100)}%`;
-        };
-        xhr.onload = () => {
-          progressWrap.classList.add('hidden');
-          let data = {};
-          try {
-            data = JSON.parse(xhr.responseText);
-          } catch (error) {
-            // leave data empty - the status-code branches below still handle this
+        try {
+          const buffer = await file.arrayBuffer();
+          const bytes = new Uint8Array(buffer);
+          if (bytes.length !== file.size) {
+            throw new Error(`The browser read ${bytes.length} bytes but the selected file is ${file.size} bytes. Please choose the file again.`);
           }
-          if (xhr.status >= 200 && xhr.status < 300) {
-            showMessage('Uploaded. The public screen will update automatically.', 'success');
-            document.getElementById('file-input').value = '';
-            loadCurrentFile();
-          } else if (xhr.status === 401) {
-            officePin = '';
-            window.localStorage.removeItem('tbyOfficePin');
-            showPinBox();
-            showMessage('Invalid PIN. Please try again.', 'error');
-          } else {
-            showMessage(data.error || 'Upload failed.', 'error');
+          if (!hasExpectedSignature(bytes, file.type)) {
+            throw new Error(`The selected file does not contain valid ${file.type === 'application/pdf' ? 'PDF' : 'image'} data. Please re-save/export it and try again.`);
           }
-        };
-        xhr.onerror = () => {
+
+          await new Promise((resolve, reject) => {
+            const xhr = new XMLHttpRequest();
+            xhr.open('POST', '/api/office/bulletin/upload');
+            xhr.setRequestHeader('Content-Type', file.type);
+            xhr.setRequestHeader('x-office-pin', officePin);
+            xhr.setRequestHeader('x-filename', encodeURIComponent(file.name));
+            xhr.setRequestHeader('x-original-size', String(file.size));
+            xhr.upload.onprogress = (event) => {
+              if (!event.lengthComputable) return;
+              progressFill.style.width = `${Math.round((event.loaded / event.total) * 100)}%`;
+            };
+            xhr.onload = () => {
+              let data = {};
+              try {
+                data = JSON.parse(xhr.responseText);
+              } catch (error) {}
+
+              if (xhr.status >= 200 && xhr.status < 300) {
+                resolve();
+              } else if (xhr.status === 401) {
+                officePin = '';
+                window.localStorage.removeItem('tbyOfficePin');
+                showPinBox();
+                reject(new Error('Invalid PIN. Please try again.'));
+              } else {
+                reject(new Error(data.error || 'Upload failed.'));
+              }
+            };
+            xhr.onerror = () => reject(new Error('Upload failed - check your connection and try again.'));
+            xhr.send(buffer);
+          });
+
+          showMessage('Uploaded. The public screen will update automatically.', 'success');
+          document.getElementById('file-input').value = '';
+          loadCurrentFile();
+        } catch (error) {
+          showMessage(error.message, 'error');
+        } finally {
           progressWrap.classList.add('hidden');
-          showMessage('Upload failed - check your connection and try again.', 'error');
-        };
-        xhr.send(file);
+          uploadButton.disabled = false;
+        }
       }
 
       document.getElementById('remove-btn').addEventListener('click', async () => {
