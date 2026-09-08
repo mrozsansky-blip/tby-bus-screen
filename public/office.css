@@ -16,19 +16,21 @@
 html,
 body {
   margin: 0;
-  min-height: 100vh;
+  height: 100vh;
   background: var(--bg);
   color: var(--ink);
   font-family: Arial, Helvetica, sans-serif;
-  overflow-x: hidden;
+  overflow: hidden;
 }
 
-.office-shell { min-height: 100vh; }
+.office-shell {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
 
 .office-header {
-  position: sticky;
-  top: 0;
-  z-index: 10;
+  flex: 0 0 auto;
   display: flex;
   justify-content: space-between;
   gap: 14px;
@@ -86,20 +88,36 @@ h1 {
 }
 
 .route-grid {
+  flex: 1 1 auto;
+  min-height: 0;
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(270px, 1fr));
-  gap: 10px;
-  padding: 10px;
+  /* Fallback for the instant before JS measures the container and picks an exact fit
+     (see layoutGrid() in office.html) - it overrides these with inline styles. */
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 8px;
+  padding: 8px;
   width: 100%;
+  overflow: hidden;
 }
 
 .route-card {
+  /* Lets the card's own font-size/padding clamp()s below read cqw (container query width)
+     instead of viewport width, so every card scales to whatever cell layoutGrid() gives it -
+     a handful of big cards or a screenful of small ones both stay legible with no scrolling. */
+  container-type: inline-size;
   min-width: 0;
+  min-height: 0;
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  /* Centers the card's content block vertically instead of pinning it to the top - when a
+     screen has few enough routes that layoutGrid() gives each card lots of height, this
+     avoids a lopsided card with a wall of empty space under the buttons. */
+  justify-content: center;
   background: var(--card);
   border: 2px solid var(--border);
-  border-radius: 12px;
-  padding: 9px;
+  border-radius: clamp(4px, 3cqw, 12px);
+  padding: clamp(5px, 3cqw, 9px);
   box-shadow: 0 4px 12px rgba(17, 24, 39, 0.08);
 }
 
@@ -140,8 +158,8 @@ h1 {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
-  gap: 8px;
-  margin-bottom: 8px;
+  gap: clamp(3px, 2cqw, 8px);
+  margin-bottom: clamp(3px, 2cqw, 8px);
   min-width: 0;
 }
 
@@ -150,7 +168,7 @@ h1 {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: clamp(21px, 2vw, 30px);
+  font-size: clamp(12px, 7.5cqw, 30px);
   line-height: 0.95;
   font-weight: 900;
   text-transform: uppercase;
@@ -162,8 +180,8 @@ h1 {
   border-radius: 999px;
   background: #e5e7eb;
   color: #111827;
-  padding: 5px 8px;
-  font-size: 11px;
+  padding: clamp(2px, 1.4cqw, 5px) clamp(4px, 2.2cqw, 8px);
+  font-size: clamp(8px, 3.2cqw, 11px);
   font-weight: 900;
   text-transform: uppercase;
 }
@@ -174,15 +192,15 @@ h1 {
 
 .spot-row {
   display: grid;
-  grid-template-columns: 42px minmax(0, 1fr);
+  grid-template-columns: clamp(22px, 12cqw, 42px) minmax(0, 1fr);
   align-items: center;
-  gap: 6px;
-  margin-bottom: 7px;
+  gap: clamp(3px, 1.6cqw, 6px);
+  margin-bottom: clamp(3px, 2cqw, 7px);
 }
 
 .spot-row span {
   display: block;
-  font-size: 11px;
+  font-size: clamp(7px, 2.8cqw, 11px);
   font-weight: 900;
   text-transform: uppercase;
   color: var(--muted);
@@ -193,9 +211,9 @@ input {
   min-width: 0;
   width: 100%;
   border: 2px solid var(--border);
-  border-radius: 9px;
-  padding: 7px 8px;
-  font-size: 15px;
+  border-radius: clamp(4px, 2.4cqw, 9px);
+  padding: clamp(2px, 1.8cqw, 7px) clamp(3px, 2.2cqw, 8px);
+  font-size: clamp(9px, 4.2cqw, 15px);
   font-weight: 800;
   background: white;
 }
@@ -203,22 +221,22 @@ input {
 .time-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 6px;
-  margin-bottom: 7px;
+  gap: clamp(3px, 1.6cqw, 6px);
+  margin-bottom: clamp(3px, 2cqw, 7px);
 }
 
 .time-grid div {
   min-width: 0;
   border: 1px solid var(--border);
-  border-radius: 9px;
-  padding: 6px 7px;
+  border-radius: clamp(4px, 2.4cqw, 9px);
+  padding: clamp(2px, 1.6cqw, 6px) clamp(3px, 1.8cqw, 7px);
   background: #f9fafb;
 }
 
 .time-grid span {
   display: block;
   color: var(--muted);
-  font-size: 10px;
+  font-size: clamp(6px, 2.6cqw, 10px);
   font-weight: 900;
   text-transform: uppercase;
 }
@@ -226,7 +244,7 @@ input {
 .time-grid strong {
   display: block;
   margin-top: 2px;
-  font-size: 16px;
+  font-size: clamp(9px, 4.2cqw, 16px);
 }
 
 button {
@@ -238,17 +256,17 @@ button {
 .manual-buttons {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 5px;
+  gap: clamp(2px, 1.3cqw, 5px);
 }
 
 .mini-btn {
   min-width: 0;
   border: 2px solid var(--border);
-  border-radius: 9px;
-  padding: 9px 4px;
+  border-radius: clamp(4px, 2.4cqw, 9px);
+  padding: clamp(3px, 2.4cqw, 9px) clamp(2px, 1cqw, 4px);
   background: white;
   color: var(--ink);
-  font-size: 11px;
+  font-size: clamp(7px, 2.8cqw, 11px);
   font-weight: 900;
   text-transform: uppercase;
   white-space: nowrap;
@@ -266,6 +284,7 @@ button {
 .pin-box button:active { transform: translateY(1px); }
 
 .override-bar {
+  flex: 0 0 auto;
   margin: 10px 10px 0;
   padding: 10px 12px;
   border-radius: 12px;
@@ -319,6 +338,7 @@ button {
 }
 
 .message {
+  flex: 0 0 auto;
   margin: 10px 10px 0;
   padding: 10px 12px;
   border-radius: 12px;
@@ -332,12 +352,12 @@ button {
 
 .notify-btn {
   width: 100%;
-  margin-top: 6px;
-  padding: 9px 4px;
-  border-radius: 9px;
+  margin-top: clamp(2px, 1.6cqw, 6px);
+  padding: clamp(3px, 2.4cqw, 9px) clamp(2px, 1cqw, 4px);
+  border-radius: clamp(4px, 2.4cqw, 9px);
   background: var(--blue);
   color: white;
-  font-size: 11px;
+  font-size: clamp(7px, 2.8cqw, 11px);
   font-weight: 900;
   text-transform: uppercase;
 }
@@ -345,13 +365,13 @@ button {
 .notify-btn.texted { background: var(--green); }
 
 .text-sent-note {
-  margin-top: 6px;
-  padding: 6px 8px;
-  border-radius: 8px;
+  margin-top: clamp(2px, 1.6cqw, 6px);
+  padding: clamp(2px, 1.6cqw, 6px) clamp(3px, 2cqw, 8px);
+  border-radius: clamp(3px, 2cqw, 8px);
   background: #f0fdf4;
   border: 1px solid #bbf7d0;
   color: #14532d;
-  font-size: 11px;
+  font-size: clamp(7px, 2.8cqw, 11px);
   font-weight: 700;
   line-height: 1.35;
   overflow-wrap: anywhere;
@@ -499,17 +519,25 @@ button {
 
 .hidden { display: none; }
 
-/* No fixed-column override above this - repeat(auto-fit, minmax(270px, 1fr)) on .route-grid
-   already adds columns as the screen gets wider, sized to what actually fits. A hardcoded
-   repeat(6, minmax(270px, 1fr)) used to kick in here, but 6 columns need ~1690px of real
-   width (6 * 270px + gaps) - on anything narrower than that (a lot of office monitors,
-   especially at 125-150% display scaling), it forced cards wider than the screen, and
-   overflow-x: hidden on body clipped the excess off the right edge instead of showing it. */
-
+/* On a real office monitor, layoutGrid() in office.html measures the grid's actual box and
+   picks whatever columns x rows lets every route card fit on screen at once, no scrolling -
+   like the public hallway screen. Below 800px width that stops making sense (a phone showing
+   20 tiny unreadable cards isn't more useful than one you can scroll), so layoutGrid() bails
+   out at this same breakpoint and this media query switches back to a normal, scrollable
+   single-column stack instead. */
 @media (max-width: 800px) {
+  html, body { height: auto; overflow: auto; }
+  .office-shell { height: auto; min-height: 100vh; }
   .office-header { flex-direction: column; align-items: flex-start; }
   .header-right { align-items: flex-start; width: 100%; }
   .tabs { justify-content: flex-start; }
-  .route-grid { grid-template-columns: 1fr; padding: 8px; }
+  .route-grid {
+    flex: 1 1 auto;
+    grid-template-columns: 1fr;
+    grid-template-rows: none;
+    grid-auto-rows: auto;
+    overflow: visible;
+    padding: 8px;
+  }
   .pin-box form { flex-direction: column; }
 }

@@ -113,6 +113,7 @@
         document.getElementById('pin-box').classList.remove('hidden');
         document.getElementById('override-bar').classList.add('hidden');
         document.getElementById('grid').innerHTML = '';
+        layoutGrid();
       }
 
       function hidePinBox() {
@@ -179,10 +180,48 @@
         return text.length > max ? `${text.slice(0, max - 1)}…` : text;
       }
 
+      // Below this width layoutGrid() stands down and office.css falls back to a normal
+      // scrolling single-column stack (see the matching @media (max-width: 800px) there) -
+      // a phone showing every bus at once just means unreadably tiny cards.
+      const NO_SCROLL_QUERY = window.matchMedia('(max-width: 800px)');
+
+      // Picks whatever columns x rows lets every route card fit in the grid's actual on-screen
+      // box at once - like the public hallway screen (styles.css), just computed instead of
+      // fixed, since the office grid has far denser cards and the route count varies by school.
+      // Tries every column count, scores each by how close cards land to an ideal legible size
+      // (whichever axis - width or height - is more cramped), and keeps the best score.
+      function layoutGrid() {
+        const grid = document.getElementById('grid');
+        if (!grid) return;
+        const cardCount = grid.children.length;
+        if (!cardCount || NO_SCROLL_QUERY.matches) {
+          grid.style.gridTemplateColumns = '';
+          grid.style.gridTemplateRows = '';
+          return;
+        }
+        const width = grid.clientWidth;
+        const height = grid.clientHeight;
+        if (!width || !height) return;
+
+        const IDEAL_CARD_WIDTH = 300;
+        const IDEAL_CARD_HEIGHT = 220;
+        let best = null;
+        for (let cols = 1; cols <= cardCount; cols++) {
+          const rows = Math.ceil(cardCount / cols);
+          const cardWidth = width / cols;
+          const cardHeight = height / rows;
+          const scale = Math.min(cardWidth / IDEAL_CARD_WIDTH, cardHeight / IDEAL_CARD_HEIGHT);
+          if (!best || scale > best.scale) best = { cols, rows, scale };
+        }
+        grid.style.gridTemplateColumns = `repeat(${best.cols}, 1fr)`;
+        grid.style.gridTemplateRows = `repeat(${best.rows}, 1fr)`;
+      }
+
       function renderRoutes(routes) {
         const grid = document.getElementById('grid');
         if (!routes.length) {
           grid.innerHTML = '<div class="empty">No routes are set for this page.</div>';
+          layoutGrid();
           return;
         }
 
@@ -208,6 +247,7 @@
             </article>
           `;
         }).join('');
+        layoutGrid();
       }
 
       async function api(path, options = {}) {
@@ -530,6 +570,20 @@
         if (loadController) loadController.abort();
         if (loadTimer) window.clearInterval(loadTimer);
       });
+
+      // The grid's own box changes size whenever the header wraps, the override panel opens,
+      // a message banner appears, or the window resizes - re-run the fit whenever that happens
+      // instead of only right after a fetch, so cards never end up mis-sized or scrolling.
+      if (window.ResizeObserver) {
+        new ResizeObserver(() => layoutGrid()).observe(document.getElementById('grid'));
+      } else {
+        window.addEventListener('resize', layoutGrid);
+      }
+      if (NO_SCROLL_QUERY.addEventListener) {
+        NO_SCROLL_QUERY.addEventListener('change', layoutGrid);
+      } else {
+        NO_SCROLL_QUERY.addListener(layoutGrid);
+      }
 
       setTitle();
       loadOffice(true);
