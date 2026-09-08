@@ -15,7 +15,7 @@ const SCHOOL_TIME_ZONE = process.env.SCHOOL_TIME_ZONE || 'America/New_York';
 const CRON_SECRET = process.env.CRON_SECRET || '';
 const RESEND_API_KEY = process.env.RESEND_API_KEY || '';
 const BUS_REPORT_FROM_EMAIL = process.env.BUS_REPORT_FROM_EMAIL || 'TBY Bus Screen <busreport@tiferes.net>';
-const BUS_REPORT_RECIPIENTS = (process.env.BUS_REPORT_RECIPIENTS || 'mrozsansky@tiferes.net,liba@tiferes.net')
+const BUS_REPORT_RECIPIENTS = (process.env.BUS_REPORT_RECIPIENTS || '')
   .split(',')
   .map((email) => email.trim())
   .filter(Boolean);
