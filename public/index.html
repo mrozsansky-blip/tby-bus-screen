@@ -111,8 +111,6 @@
           .replace(/'/g, '&#039;');
       }
 
-      // Tracks which bulletin file is currently on screen (filename + upload timestamp) so the
-      // 10-second poll below doesn't re-fetch/re-flash the image or PDF unless it actually changed.
       let lastBulletinKey = '';
 
       function showBulletinView() {
@@ -147,16 +145,18 @@
 
           const key = `${meta.filename}-${meta.uploadedAt}`;
           empty.classList.add('hidden');
-          if (key === lastBulletinKey) return; // already showing this exact file
+          if (key === lastBulletinKey) return;
           lastBulletinKey = key;
 
+          const proxiedUrl = `/api/bulletin/file?url=${encodeURIComponent(meta.url)}&v=${encodeURIComponent(meta.uploadedAt || '')}`;
           if (meta.mimeType === 'application/pdf') {
             img.classList.add('hidden');
-            pdf.src = meta.url;
+            pdf.src = `${proxiedUrl}#toolbar=0&navpanes=0&scrollbar=0&view=Fit`;
             pdf.classList.remove('hidden');
           } else {
             pdf.classList.add('hidden');
-            img.src = meta.url;
+            pdf.removeAttribute('src');
+            img.src = proxiedUrl;
             img.classList.remove('hidden');
           }
         } catch (error) {
@@ -196,9 +196,7 @@
         if (!window.EventSource) return;
         const source = new EventSource('/events');
         source.onmessage = () => loadRoutes(true);
-        source.onerror = () => {
-          // The backup timer keeps the board fresh even if the live connection drops.
-        };
+        source.onerror = () => {};
       }
 
       setTitle();
