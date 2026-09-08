@@ -13,6 +13,12 @@ const OFFICE_PIN = process.env.OFFICE_PIN || '';
 const ADMIN_SECRET = process.env.ADMIN_SECRET || '';
 const SCHOOL_TIME_ZONE = process.env.SCHOOL_TIME_ZONE || 'America/New_York';
 const CRON_SECRET = process.env.CRON_SECRET || '';
+const RESEND_API_KEY = process.env.RESEND_API_KEY || '';
+const BUS_REPORT_FROM_EMAIL = process.env.BUS_REPORT_FROM_EMAIL || 'TBY Bus Screen <busreport@tiferes.net>';
+const BUS_REPORT_RECIPIENTS = (process.env.BUS_REPORT_RECIPIENTS || '')
+  .split(',')
+  .map((email) => email.trim())
+  .filter(Boolean);
 
 const AIRTABLE_TOKEN = process.env.AIRTABLE_TOKEN || '';
 const AIRTABLE_BASE_ID = process.env.AIRTABLE_BASE_ID || '';
@@ -178,6 +184,11 @@ async function createSchema() {
       file_size INTEGER,
       uploaded_at TEXT NOT NULL,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`,
+    `CREATE TABLE IF NOT EXISTS morning_report_log (
+      service_date TEXT PRIMARY KEY,
+      sent_at TEXT NOT NULL,
+      provider_message_id TEXT
     )`,
     `CREATE INDEX IF NOT EXISTS idx_routes_screen ON routes(workflow_type, use_friday, active, sort_order)`,
     `CREATE INDEX IF NOT EXISTS idx_daily_status_lookup ON daily_status(service_date, screen, route_id)`,
@@ -897,6 +908,73 @@ function formatSchoolTime(date = new Date()) {
   return new Intl.DateTimeFormat('en-US', { timeZone: SCHOOL_TIME_ZONE, hour: 'numeric', minute: '2-digit', hour12: true }).format(date);
 }
 
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#039;');
+}
+
+function formatSchoolDate(serviceDate) {
+  const [year, month, day] = serviceDate.split('-').map(Number);
+  return new Intl.DateTimeFormat('en-US', {
+    timeZone: 'UTC', weekday: 'long', month: 'long', day: 'numeric', year: 'numeric',
+  }).format(new Date(Date.UTC(year, month - 1, day)));
+}
+
+async function sendMorningArrivalReport() {
+  if (!RESEND_API_KEY) throw new Error('RESEND_API_KEY is not configured.');
+  if (!BUS_REPORT_RECIPIENTS.length) throw new Error('BUS_REPORT_RECIPIENTS is empty.');
+
+  await ensureSchema();
+  const serviceDate = toSchoolDateString();
+  const alreadySent = await run(`SELECT sent_at FROM morning_report_log WHERE service_date = ?`, [serviceDate]);
+  if (alreadySent.rows.length) return { ok: true, alreadySent: true, serviceDate, sentAt: alreadySent.rows[0].sent_at };
+
+  const result = await run(
+    `SELECT routes.display_name, routes.route_code, routes.sort_order, daily_status.arrival_time
+     FROM routes
+     LEFT JOIN daily_status
+       ON daily_status.route_id = routes.id
+      AND daily_status.service_date = ?
+      AND daily_status.screen = 'morning'
+     WHERE routes.active = 1 AND routes.workflow_type = 'To School Arrival Only'
+     ORDER BY routes.sort_order ASC, routes.display_name COLLATE NOCASE ASC`,
+    [serviceDate]
+  );
+
+  const rows = result.rows.map((row) => ({
+    name: row.display_name || row.route_code || 'Bus',
+    arrival: row.arrival_time ? formatSchoolTime(new Date(row.arrival_time)) : 'Not marked arrived',
+  }));
+  const dateLabel = formatSchoolDate(serviceDate);
+  const subject = `TBY Morning Bus Arrival Report - ${serviceDate}`;
+  const textBody = [
+    'TBY Morning Bus Arrival Report',
+    dateLabel,
+    '',
+    ...(rows.length ? rows.map((row) => `${row.name}: ${row.arrival}`) : ['No active morning buses were found.']),
+  ].join('\n');
+  const tableRows = rows.length
+    ? rows.map((row) => `<tr><td style="padding:8px 12px;border-bottom:1px solid #ddd">${escapeHtml(row.name)}</td><td style="padding:8px 12px;border-bottom:1px solid #ddd">${escapeHtml(row.arrival)}</td></tr>`).join('')
+    : '<tr><td colspan="2" style="padding:8px 12px">No active morning buses were found.</td></tr>';
+  const htmlBody = `<div style="font-family:Arial,sans-serif;color:#222"><h2 style="margin-bottom:4px">TBY Morning Bus Arrival Report</h2><p style="margin-top:0">${escapeHtml(dateLabel)}</p><table style="border-collapse:collapse;min-width:360px"><thead><tr><th style="padding:8px 12px;text-align:left;border-bottom:2px solid #555">Bus</th><th style="padding:8px 12px;text-align:left;border-bottom:2px solid #555">Arrival time</th></tr></thead><tbody>${tableRows}</tbody></table></div>`;
+
+  const response = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ from: BUS_REPORT_FROM_EMAIL, to: BUS_REPORT_RECIPIENTS, subject, text: textBody, html: htmlBody }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(`Morning report email failed (${response.status}): ${data.message || 'Unknown email provider error'}`);
+
+  const sentAt = new Date().toISOString();
+  await run(`INSERT INTO morning_report_log (service_date, sent_at, provider_message_id) VALUES (?, ?, ?)`, [serviceDate, sentAt, data.id || null]);
+  return { ok: true, alreadySent: false, serviceDate, sentAt, recipients: BUS_REPORT_RECIPIENTS.length, buses: rows.length };
+}
+
 async function getActiveTextTemplate(templateId) {
   if (!templateId) throw new Error('templateId is required.');
   const row = await run(`SELECT id, name, body FROM text_templates WHERE id = ? AND active = 1`, [templateId]);
@@ -1541,6 +1619,23 @@ app.get('/api/cron/export-airtable', async (req, res) => {
   if (!validateCronSecret(req, res)) return;
   try {
     res.json(await exportToAirtable());
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/cron/morning-arrival-report', async (req, res) => {
+  if (!validateCronSecret(req, res)) return;
+  try {
+    const { weekday, hour, minute } = getSchoolNowParts();
+    const isWeekday = !['Sat', 'Sun'].includes(weekday);
+    // Vercel cron uses UTC and may start a few minutes late. Both Eastern DST offsets are
+    // scheduled in vercel.json; only the invocation landing near 10:15 AM local time proceeds.
+    if (!isWeekday || hour !== 10 || minute < 10 || minute > 29) {
+      return res.json({ ok: true, skipped: true, reason: 'Outside the weekday 10:15 AM school-time window.' });
+    }
+    res.json(await sendMorningArrivalReport());
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: error.message });

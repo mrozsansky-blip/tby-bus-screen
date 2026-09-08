@@ -59,6 +59,9 @@ TURSO_AUTH_TOKEN=your Turso auth token
 OFFICE_PIN=PIN for the office control panel
 ADMIN_SECRET=secret for /api/admin/* routes (setup.html, sync, import)
 CRON_SECRET=secret the nightly export cron authenticates with
+RESEND_API_KEY=API key used to email the weekday morning arrival report
+BUS_REPORT_FROM_EMAIL=verified sender address
+BUS_REPORT_RECIPIENTS=comma-separated recipient addresses
 AIRTABLE_TOKEN=your Airtable personal access token
 AIRTABLE_BASE_ID=appYCWLjqODndV4n2
 BLOB_READ_WRITE_TOKEN=from the Blob store's own page - see below
@@ -90,6 +93,12 @@ AIRTABLE_DAILY_STATUS_TABLE_NAME=Bus Daily Status
 TEXTING_SYSTEM_URL=https://your-tby-texting-system-deployment.vercel.app
 TEXTING_MCP_AUTH_TOKEN=the tby-texting-system deployment's MCP_AUTH_TOKEN
 ```
+
+The morning arrival report is sent at 10:15 AM America/New_York, Monday through
+Friday. It lists every active morning route and its recorded arrival time, or
+"Not marked arrived." The two UTC run times cover daylight and standard
+time; the endpoint's local-time guard and database send log prevent an early,
+late, or duplicate email.
 
 All of the above are required once the app runs in production (`VERCEL=1`);
 locally, missing secrets just relax auth checks instead of failing closed.
