@@ -7,6 +7,10 @@
   ],
   "rewrites": [
     {
+      "source": "/api/bulletin/file",
+      "destination": "/api/bulletin-file"
+    },
+    {
       "source": "/(.*)",
       "destination": "/api/index"
     }
