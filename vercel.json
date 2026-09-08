@@ -6,13 +6,21 @@
     }
   ],
   "rewrites": [
-    {
-      "source": "/api/bulletin/file",
-      "destination": "/api/bulletin-file"
-    },
-    {
-      "source": "/(.*)",
-      "destination": "/api/index"
-    }
+    { "source": "/api/bulletin/file", "destination": "/api/bulletin-file" },
+    { "source": "/", "destination": "/api/index" },
+    { "source": "/health", "destination": "/api/index" },
+    { "source": "/events", "destination": "/api/index" },
+    { "source": "/current", "destination": "/api/index" },
+    { "source": "/bulletin", "destination": "/api/index" },
+    { "source": "/from-school", "destination": "/api/index" },
+    { "source": "/pri-dismissal", "destination": "/api/index" },
+    { "source": "/friday-dismissal", "destination": "/api/index" },
+    { "source": "/office", "destination": "/api/index" },
+    { "source": "/office/morning", "destination": "/api/index" },
+    { "source": "/office/from-school", "destination": "/api/index" },
+    { "source": "/office/pri-dismissal", "destination": "/api/index" },
+    { "source": "/office/friday-dismissal", "destination": "/api/index" },
+    { "source": "/office/bulletin", "destination": "/api/index" },
+    { "source": "/api/(.*)", "destination": "/api/index" }
   ]
 }
