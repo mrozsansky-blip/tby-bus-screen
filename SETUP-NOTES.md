@@ -224,6 +224,73 @@ pathname, filename, mime type, size, upload time).
   client - the browser talks only to this app's own domain, never to
   Vercel's infrastructure directly.
 
+# Morning arrival report
+
+`/office/morning-report` shows every AM ("To School Arrival Only") route for
+a service day, split into buses that have arrived (earliest first, with
+their arrival time) and ones still Waiting. It's a plain read-only view -
+`fetchMorningArrivalReport(serviceDate)` in `server.js` reuses the same
+`daily_status` rows the live `/office/morning` board writes, it doesn't add
+any new tracking. Defaults to today; pass `?date=YYYY-MM-DD` (the page's own
+date picker does this) to see a past day instead - for a past date it only
+reads what's already in `daily_status`, it doesn't backfill Waiting rows the
+way today's report does via `ensureDailyStatus`.
+
+Two JSON endpoints share that same function:
+
+- `GET /api/office/morning-report` - PIN-protected (`x-office-pin`), used by
+  the page above.
+- `GET /api/reports/morning-arrivals` - protected instead by
+  `MORNING_REPORT_SECRET` (checked the same way `CRON_SECRET` is: an
+  `Authorization: Bearer <secret>` header, an `x-report-secret` header, or a
+  `?secret=` query param). Optional, general-purpose - a way to pull the
+  report from outside the office UI (a spreadsheet, another script) without
+  the office PIN. Not required for the daily email below, which calls
+  `fetchMorningArrivalReport()` directly rather than going over HTTP.
+
+## Daily AM arrivals email
+
+Once each school morning (`vercel.json` cron, `30 14 * * 1-5` = 10:30 AM
+Eastern **Daylight** Time, weekdays only), `GET /api/cron/morning-report`
+(`CRON_SECRET`-protected, same as the nightly Airtable export) builds the AM
+arrival report for that day and emails it via
+[Resend](https://resend.com)'s HTTP API (`sendMorningReportEmail()` in
+`server.js` - a plain `fetch` call to `api.resend.com`, no SDK dependency
+added). Requires three env vars, all in the "Environment variables" table in
+`README.md`:
+
+- `RESEND_API_KEY` - from the Resend dashboard (Settings → API Keys).
+- `MORNING_REPORT_FROM` - e.g. `TBY Bus Arrivals <report@reports.tiferes.net>`.
+  Resend requires a verified sending domain to deliver to arbitrary
+  recipients (its shared `onboarding@resend.dev` sender only delivers to the
+  Resend account's own email).
+- `MORNING_REPORT_RECIPIENTS` - comma-separated recipient list, e.g.
+  `mrozsansky@tiferes.net,liba@tiferes.net,office@tiferes.net`.
+
+**Sending domain: `reports.tiferes.net`**, verified in Resend (DKIM, the
+`send.reports` MAIL FROM subdomain's MX, and its SPF TXT record are all
+green). Deliberately a subdomain, not the bare `tiferes.net` - that's the
+school's real mail domain (Google Workspace, where the recipients above
+live), so keeping this isolated under `reports.tiferes.net` means nothing
+here can collide with the school's existing SPF/DKIM/MX no matter what
+Resend or GoDaddy do to it. `MORNING_REPORT_FROM` must be an address at
+`reports.tiferes.net` (any local part works, e.g. `report@reports.tiferes.net`)
+- GoDaddy's own "SPF management" feature initially rewrote the `send.reports`
+SPF TXT record into its own indirect `_spfm.` format, which didn't match
+what Resend's checker expected; re-adding it as the literal
+`v=spf1 include:amazonses.com ~all` fixed it.
+
+Any of the three missing makes `/api/cron/morning-report` fail loudly
+(500, logged) rather than silently skip sending - check the Vercel cron's
+run log (Project → Cron Jobs) if a morning's email doesn't arrive.
+
+**DST note:** the cron schedule is a fixed UTC time (`14:30`), which is
+10:30 AM only while Eastern Daylight Time is in effect (mid-March to early
+November). After the fall-back to Eastern Standard Time it'll fire at
+9:30 AM local instead - update the schedule (`30 15 * * 1-5`) around the
+clock change, and back again in spring, or move to a UTC time that's an
+acceptable send time either way.
+
   This wasn't the original design. Two earlier attempts had the office
   browser PUT the file straight to Vercel Blob storage instead (first
   `@vercel/blob`'s client-token flow, then its OIDC-compatible presigned-URL

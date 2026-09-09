@@ -13,6 +13,7 @@ const OFFICE_PIN = process.env.OFFICE_PIN || '';
 const ADMIN_SECRET = process.env.ADMIN_SECRET || '';
 const SCHOOL_TIME_ZONE = process.env.SCHOOL_TIME_ZONE || 'America/New_York';
 const CRON_SECRET = process.env.CRON_SECRET || '';
+const MORNING_REPORT_SECRET = process.env.MORNING_REPORT_SECRET || '';
 
 const AIRTABLE_TOKEN = process.env.AIRTABLE_TOKEN || '';
 const AIRTABLE_BASE_ID = process.env.AIRTABLE_BASE_ID || '';
@@ -23,6 +24,15 @@ const AIRTABLE_BUS_ROUTES_TABLE_NAME = process.env.AIRTABLE_BUS_ROUTES_TABLE_NAM
 
 const TEXTING_SYSTEM_URL = (process.env.TEXTING_SYSTEM_URL || '').replace(/\/+$/, '');
 const TEXTING_MCP_AUTH_TOKEN = process.env.TEXTING_MCP_AUTH_TOKEN || '';
+
+// Daily AM arrival report email - sent via Resend's HTTP API (see sendMorningReportEmail below),
+// triggered by the /api/cron/morning-report cron alongside the existing nightly Airtable export.
+const RESEND_API_KEY = process.env.RESEND_API_KEY || '';
+const MORNING_REPORT_FROM = process.env.MORNING_REPORT_FROM || '';
+const MORNING_REPORT_RECIPIENTS = (process.env.MORNING_REPORT_RECIPIENTS || '')
+  .split(',')
+  .map((email) => email.trim())
+  .filter(Boolean);
 
 const STATUS_VALUES = ['Waiting', 'Arrived', 'Loading', 'Ready to Board', 'Departed', 'Delayed', 'Cancelled'];
 
@@ -273,6 +283,23 @@ function validateCronSecret(req, res) {
   if (!CRON_SECRET && !isProductionRuntime()) return true;
   if (getCronSecret(req) === CRON_SECRET) return true;
   res.status(401).json({ error: 'Invalid cron secret' });
+  return false;
+}
+
+// Same lookup order as getCronSecret (Bearer header, x-<name> header, ?secret= query param) - used
+// by the machine-readable /api/reports/morning-arrivals endpoint that the daily report email job
+// fetches from outside the office UI, so it can't rely on the OFFICE_PIN prompt like a person would.
+function getReportSecret(req) {
+  const auth = req.headers.authorization || '';
+  if (auth.toLowerCase().startsWith('bearer ')) return auth.slice(7).trim();
+  return req.headers['x-report-secret'] || req.query.secret || '';
+}
+
+function validateReportSecret(req, res) {
+  if (!requireConfiguredSecret(MORNING_REPORT_SECRET, 'MORNING_REPORT_SECRET', res)) return false;
+  if (!MORNING_REPORT_SECRET && !isProductionRuntime()) return true;
+  if (getReportSecret(req) === MORNING_REPORT_SECRET) return true;
+  res.status(401).json({ error: 'Invalid report secret' });
   return false;
 }
 
@@ -631,6 +658,107 @@ async function fetchRoutesForScreen(screen, options = {}) {
     routes: result.rows.map((row) => mapRouteRow(row, options.office, textSummaryByRoute.get(row.route_id))),
     spots,
   };
+}
+
+// Every AM ("morning arrival") route for a given service day, split into buses that have already
+// arrived (earliest first) and ones still Waiting. Backs both the /office/morning-report page and
+// the /api/reports/morning-arrivals endpoint the daily report email job calls. Only touches
+// ensureDailyStatus (which would create today's Waiting rows) when reporting on today itself - a
+// report for a past date should reflect what actually happened, not backfill rows for it.
+async function fetchMorningArrivalReport(serviceDate) {
+  await ensureSchema();
+  const date = serviceDate || toSchoolDateString();
+  const filter = screenFilter('morning');
+
+  if (date === toSchoolDateString()) {
+    const routes = await run(`SELECT id FROM routes WHERE active = 1 AND (${filter.sql})`, filter.args);
+    for (const route of routes.rows) await ensureDailyStatus(route.id, 'morning', date);
+  }
+
+  const result = await run(
+    `SELECT routes.display_name, routes.route_code, routes.sort_order,
+            daily_status.current_status, daily_status.arrival_time
+     FROM routes
+     JOIN daily_status
+       ON daily_status.route_id = routes.id
+      AND daily_status.service_date = ?
+      AND daily_status.screen = 'morning'
+     WHERE routes.active = 1 AND (${filter.sql})
+     ORDER BY routes.sort_order ASC, routes.display_name COLLATE NOCASE ASC`,
+    [date, ...filter.args]
+  );
+
+  const routes = result.rows.map((row) => ({
+    name: row.display_name || row.route_code || 'Bus',
+    status: row.current_status || 'Waiting',
+    arrivalTime: row.arrival_time || null,
+    arrivalTimeFormatted: row.arrival_time ? formatSchoolTime(new Date(row.arrival_time)) : null,
+  }));
+
+  const arrived = routes
+    .filter((route) => route.arrivalTime)
+    .sort((a, b) => a.arrivalTime.localeCompare(b.arrivalTime));
+  const notArrived = routes.filter((route) => !route.arrivalTime);
+
+  return { serviceDate: date, arrived, notArrived, totalRoutes: routes.length };
+}
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+function buildMorningReportEmail(report) {
+  const arrivedLines = report.arrived.map((route) => `${route.name} — ${route.arrivalTimeFormatted}`);
+  const notArrivedLines = report.notArrived.map((route) => `${route.name} — not yet arrived`);
+  const text = [
+    `AM bus arrivals for ${report.serviceDate}:`,
+    '',
+    ...(arrivedLines.length ? arrivedLines : ['(no buses had arrived yet)']),
+    ...(notArrivedLines.length ? ['', 'Not yet arrived:', ...notArrivedLines] : []),
+  ].join('\n');
+
+  const arrivedRows = report.arrived
+    .map((route) => `<tr><td>${escapeHtml(route.name)}</td><td><strong>${escapeHtml(route.arrivalTimeFormatted)}</strong></td></tr>`)
+    .join('');
+  const notArrivedHtml = report.notArrived.length
+    ? `<p>Not yet arrived: ${report.notArrived.map((route) => escapeHtml(route.name)).join(', ')}</p>`
+    : '';
+  const html = `
+    <div style="font-family: -apple-system, Arial, sans-serif;">
+      <h2 style="margin: 0 0 8px;">AM Bus Arrivals — ${escapeHtml(report.serviceDate)}</h2>
+      <table cellpadding="6" style="border-collapse: collapse;">
+        <thead><tr><th align="left">Route</th><th align="left">Arrived</th></tr></thead>
+        <tbody>${arrivedRows || '<tr><td colspan="2">No buses had arrived yet.</td></tr>'}</tbody>
+      </table>
+      ${notArrivedHtml}
+    </div>
+  `;
+
+  return { subject: `TBY AM Bus Arrivals — ${report.serviceDate}`, text, html };
+}
+
+// Sends the AM arrival report over Resend's HTTP API (https://resend.com) - a plain fetch call
+// like the Airtable export above, rather than a new SDK dependency. All three env vars must be
+// set (see README/SETUP-NOTES) or this throws instead of silently no-op'ing, since a misconfigured
+// cron should surface as a failed run, not a report nobody gets.
+async function sendMorningReportEmail(report) {
+  if (!RESEND_API_KEY || !MORNING_REPORT_FROM || !MORNING_REPORT_RECIPIENTS.length) {
+    throw new Error('RESEND_API_KEY, MORNING_REPORT_FROM, and MORNING_REPORT_RECIPIENTS must all be configured.');
+  }
+  const { subject, text, html } = buildMorningReportEmail(report);
+  const response = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ from: MORNING_REPORT_FROM, to: MORNING_REPORT_RECIPIENTS, subject, text, html }),
+  });
+  if (!response.ok) throw new Error(`Resend send failed ${response.status}: ${await response.text()}`);
+  const data = await response.json().catch(() => ({}));
+  return { emailId: data.id || null, recipients: MORNING_REPORT_RECIPIENTS };
 }
 
 async function fetchStatus(routeId, screen) {
@@ -1166,6 +1294,33 @@ app.get('/api/routes/:screen', async (req, res) => {
   }
 });
 
+// Office-facing view of the AM arrival report (see /office/morning-report). PIN-gated like the
+// other office data endpoints - a person opening that page in a browser.
+app.get('/api/office/morning-report', async (req, res) => {
+  if (!validateOfficePin(req, res)) return;
+  try {
+    const report = await fetchMorningArrivalReport(req.query.date);
+    res.json(report);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Machine-facing version of the same report, gated by MORNING_REPORT_SECRET instead of the office
+// PIN - this is what the daily report email job fetches from outside the office UI. See
+// SETUP-NOTES.md for how that job is wired up.
+app.get('/api/reports/morning-arrivals', async (req, res) => {
+  if (!validateReportSecret(req, res)) return;
+  try {
+    const report = await fetchMorningArrivalReport(req.query.date);
+    res.json(report);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Registered before the /api/office/:screen wildcard below - Express matches routes in
 // registration order, and a wildcard segment (:screen) would otherwise swallow this literal path
 // (:screen = "screen-override") before it ever reached this handler.
@@ -1568,12 +1723,31 @@ app.get('/api/cron/export-airtable', async (req, res) => {
   }
 });
 
+// Fires once each school morning (see vercel.json) - builds today's AM arrival report and emails
+// it via Resend to MORNING_REPORT_RECIPIENTS. See /api/reports/morning-arrivals for the same
+// report as JSON without the email step.
+app.get('/api/cron/morning-report', async (req, res) => {
+  if (!validateCronSecret(req, res)) return;
+  try {
+    const report = await fetchMorningArrivalReport();
+    const emailResult = await sendMorningReportEmail(report);
+    res.json({ ok: true, serviceDate: report.serviceDate, totalRoutes: report.totalRoutes, ...emailResult });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.get(['/office', '/office/morning', '/office/from-school', '/office/pri-dismissal', '/office/friday-dismissal'], (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'office.html'));
 });
 
 app.get('/office/bulletin', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'office-bulletin.html'));
+});
+
+app.get('/office/morning-report', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'office-morning-report.html'));
 });
 
 app.get(['/current', '/from-school', '/pri-dismissal', '/friday-dismissal', '/bulletin'], (req, res) => {
