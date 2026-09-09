@@ -15,11 +15,15 @@ is used two ways:
   into Turso. Re-run it any time the roster changes; it's safe to run
   repeatedly. See `SETUP-NOTES.md` for exactly how Airtable fields map to
   routes.
-- **Nightly history export** — once a day, a cron job copies the day's
-  status events out of Turso into two Airtable tables, `Bus Route Event Log`
-  and `Bus Daily Status`, so the office has a permanent, searchable record.
-  This is one-way (Turso → Airtable); editing those tables does not affect
-  the live screens.
+- **History export (manual)** — `GET /api/cron/export-airtable`
+  (`CRON_SECRET`-protected) or the "Export to Airtable" button on
+  `/setup.html` copies the day's status events out of Turso into two
+  Airtable tables, `Bus Route Event Log` and `Bus Daily Status`, for a
+  permanent, searchable record. This is one-way (Turso → Airtable); editing
+  those tables does not affect the live screens. It's no longer scheduled
+  automatically (the daily arrival/departure report emails cover the day-to-day
+  need) - `vercel.json` has no cron for it, so nothing runs unless you
+  trigger it yourself or add a cron back.
 
 Parking spots have no Airtable source — they're entered once via
 `/setup.html`.
@@ -42,6 +46,13 @@ Parking spots have no Airtable source — they're entered once via
   plus any that haven't arrived yet (PIN-protected). The same report is also
   emailed automatically once each school morning - see "Daily AM arrivals
   email" in `SETUP-NOTES.md`
+- `/office/afternoon-report` - every dismissal route that ran that day (PRI
+  + From School, or just Friday Dismissal on a Friday), in departure order,
+  plus any that haven't left yet (PIN-protected). Also emailed automatically
+  each afternoon - see "Daily PM departures email" in `SETUP-NOTES.md`
+- `/office/route-history` - pick one route from a dropdown and see its
+  recorded time (arrival or departure, whichever applies) for every school
+  day on record through a chosen date (PIN-protected)
 - `/setup.html` - one-time/occasional admin tools: import routes & parking
   spots directly, or sync routes from Airtable (admin-secret protected)
 
@@ -62,9 +73,9 @@ TURSO_DATABASE_URL=your Turso database URL
 TURSO_AUTH_TOKEN=your Turso auth token
 OFFICE_PIN=PIN for the office control panel
 ADMIN_SECRET=secret for /api/admin/* routes (setup.html, sync, import)
-CRON_SECRET=secret the nightly export cron (and the morning-report cron) authenticate with
-RESEND_API_KEY=your Resend API key, used to send the daily AM arrivals email
-MORNING_REPORT_FROM=verified sender for that email, e.g. "TBY Bus Arrivals <report@reports.tiferes.net>"
+CRON_SECRET=secret the nightly export cron and both report crons authenticate with
+RESEND_API_KEY=your Resend API key, used to send the daily arrival/departure report emails
+MORNING_REPORT_FROM=verified sender for those emails, e.g. "TBY Bus Report <report@reports.tiferes.net>"
 MORNING_REPORT_RECIPIENTS=comma-separated recipient emails, e.g. a@school.org,b@school.org
 AIRTABLE_TOKEN=your Airtable personal access token
 AIRTABLE_BASE_ID=appYCWLjqODndV4n2

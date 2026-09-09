@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>TBY Bus Office - Morning Report</title>
+    <title>TBY Bus Office - Route History</title>
     <link rel="stylesheet" href="/office.css" />
     <style>
       .report-shell { max-width: 640px; margin: 0 auto; padding: 14px; }
@@ -16,8 +16,9 @@
       .report-table td.time { font-weight: 800; white-space: nowrap; }
       .report-table td.waiting { color: var(--muted); font-style: italic; }
       .empty-note { color: var(--muted); font-size: 14px; padding: 8px 0; }
-      .date-row { display: flex; align-items: center; gap: 10px; margin-top: 4px; }
-      .date-row input[type='date'] { font-size: 14px; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--border); }
+      .picker-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 4px; }
+      .picker-row select, .picker-row input[type='date'] { font-size: 14px; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--border); }
+      .picker-row select { flex: 1; min-width: 180px; }
     </style>
   </head>
   <body>
@@ -25,14 +26,13 @@
       <header class="office-header">
         <div>
           <div class="eyebrow">TBY Bus Office</div>
-          <h1>Morning Arrival Report</h1>
+          <h1>Route History</h1>
         </div>
         <div class="header-right">
           <nav class="tabs">
-            <a href="/office/morning">Morning</a>
             <a href="/office/from-school">Routes</a>
+            <a href="/office/morning-report">Morning Report</a>
             <a href="/office/afternoon-report">Afternoon Report</a>
-            <a href="/office/route-history">Route History</a>
           </nav>
           <div id="updated" class="updated"></div>
         </div>
@@ -40,7 +40,7 @@
 
       <section id="pin-box" class="pin-box hidden">
         <h2>Office PIN</h2>
-        <p>Enter the office PIN to view the morning arrival report.</p>
+        <p>Enter the office PIN to view route history.</p>
         <form id="pin-form">
           <input id="pin-input" type="password" inputmode="numeric" autocomplete="current-password" placeholder="PIN" />
           <button type="submit">Open</button>
@@ -51,22 +51,20 @@
 
       <div id="report-content" class="report-shell hidden">
         <div class="report-card">
-          <p class="hint">Every AM route, in the order each bus arrived. Reload after buses finish arriving to see the finished list.</p>
-          <div class="date-row">
-            <label for="date-input">Date</label>
-            <input id="date-input" type="date" />
-            <button id="reload-btn" type="button">Reload</button>
+          <p class="hint">Pick a route to see its recorded time every school day, from the start of its history through the date below.</p>
+          <div class="picker-row">
+            <select id="route-select"><option value="">Loading routes…</option></select>
+          </div>
+          <div class="picker-row" style="margin-top: 10px;">
+            <label for="through-input">Through</label>
+            <input id="through-input" type="date" />
+            <button id="load-btn" type="button">Load</button>
           </div>
         </div>
 
         <div class="report-card">
-          <h2>Arrived</h2>
-          <div id="arrived-box"></div>
-        </div>
-
-        <div class="report-card">
-          <h2>Not yet arrived</h2>
-          <div id="not-arrived-box"></div>
+          <h2 id="route-heading">Days</h2>
+          <div id="days-box"></div>
         </div>
       </div>
     </main>
@@ -75,9 +73,6 @@
       let officePin = window.localStorage.getItem('tbyOfficePin') || '';
 
       function todayDateString() {
-        // Matches the server's toSchoolDateString() shape (America/New_York by default) closely
-        // enough for the date picker's default; the server is still the source of truth for what
-        // "today" means once a date is actually submitted.
         return new Intl.DateTimeFormat('en-CA', { year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
       }
 
@@ -109,57 +104,72 @@
           .replace(/'/g, '&#039;');
       }
 
-      function renderReport(report) {
-        document.getElementById('date-input').value = report.serviceDate;
+      function routeOptionLabel(route) {
+        const parts = [route.name];
+        if (route.routeName) parts.push(`(${route.routeName})`);
+        if (route.company) parts.push(`- ${route.company}`);
+        return parts.join(' ');
+      }
 
-        const arrivedBox = document.getElementById('arrived-box');
-        if (!report.arrived.length) {
-          arrivedBox.innerHTML = '<p class="empty-note">No buses have arrived yet.</p>';
-        } else {
-          const rows = report.arrived
-            .map((route, index) => `
-              <tr>
-                <td>${index + 1}</td>
-                <td>${escapeHtml(route.name)}</td>
-                <td>${escapeHtml(route.routeName)}</td>
-                <td>${escapeHtml(route.company)}</td>
-                <td class="time">${escapeHtml(route.arrivalTimeFormatted)}</td>
-              </tr>
-            `)
-            .join('');
-          arrivedBox.innerHTML = `
-            <table class="report-table">
-              <thead><tr><th>#</th><th>Route</th><th>Route Name</th><th>Company</th><th>Arrived</th></tr></thead>
-              <tbody>${rows}</tbody>
-            </table>
-          `;
-        }
-
-        const notArrivedBox = document.getElementById('not-arrived-box');
-        if (!report.notArrived.length) {
-          notArrivedBox.innerHTML = '<p class="empty-note">Every AM route has arrived.</p>';
-        } else {
-          const rows = report.notArrived
-            .map((route) => `<tr><td>${escapeHtml(route.name)}</td><td>${escapeHtml(route.routeName)}</td><td>${escapeHtml(route.company)}</td><td class="waiting">Waiting</td></tr>`)
-            .join('');
-          notArrivedBox.innerHTML = `
-            <table class="report-table">
-              <thead><tr><th>Route</th><th>Route Name</th><th>Company</th><th>Status</th></tr></thead>
-              <tbody>${rows}</tbody>
-            </table>
-          `;
+      async function loadRoutes() {
+        const select = document.getElementById('route-select');
+        const savedRouteId = window.localStorage.getItem('tbyRouteHistoryRouteId') || '';
+        try {
+          const response = await fetch('/api/office/routes', { cache: 'no-store', headers: { 'x-office-pin': officePin } });
+          if (response.status === 401) {
+            officePin = '';
+            window.localStorage.removeItem('tbyOfficePin');
+            showPinBox();
+            showMessage('Invalid PIN. Please try again.', 'error');
+            return;
+          }
+          const data = await response.json();
+          if (!response.ok) throw new Error(data.error || 'Could not load the route list.');
+          select.innerHTML = data.routes.map((route) => `<option value="${escapeHtml(route.id)}">${escapeHtml(routeOptionLabel(route))}</option>`).join('');
+          if (savedRouteId && data.routes.some((route) => route.id === savedRouteId)) select.value = savedRouteId;
+          if (select.value) loadHistory();
+        } catch (error) {
+          showMessage(error.message, 'error');
         }
       }
 
-      async function loadReport() {
+      function renderHistory(report) {
+        document.getElementById('route-heading').textContent = `${report.route.name}${report.route.routeName ? ' — ' + report.route.routeName : ''} — Days`;
+        const box = document.getElementById('days-box');
+        if (!report.days.length) {
+          box.innerHTML = '<p class="empty-note">No history recorded for this route yet.</p>';
+          return;
+        }
+        const rows = report.days
+          .map((day) => `
+            <tr>
+              <td>${escapeHtml(day.serviceDate)}</td>
+              <td>${escapeHtml(day.screenLabel)}</td>
+              <td class="${day.eventTimeFormatted ? 'time' : 'waiting'}">${escapeHtml(day.eventTimeFormatted || day.status)}</td>
+            </tr>
+          `)
+          .join('');
+        box.innerHTML = `
+          <table class="report-table">
+            <thead><tr><th>Date</th><th>Screen</th><th>Time</th></tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        `;
+      }
+
+      async function loadHistory() {
         if (!officePin) {
           showPinBox();
           return;
         }
-        const date = document.getElementById('date-input').value || undefined;
+        const routeId = document.getElementById('route-select').value;
+        if (!routeId) return;
+        window.localStorage.setItem('tbyRouteHistoryRouteId', routeId);
+        const through = document.getElementById('through-input').value || undefined;
         try {
-          const url = new URL('/api/office/morning-report', window.location.origin);
-          if (date) url.searchParams.set('date', date);
+          const url = new URL('/api/office/route-history', window.location.origin);
+          url.searchParams.set('routeId', routeId);
+          if (through) url.searchParams.set('through', through);
           const response = await fetch(url, { cache: 'no-store', headers: { 'x-office-pin': officePin } });
           if (response.status === 401) {
             officePin = '';
@@ -169,26 +179,28 @@
             return;
           }
           const data = await response.json();
-          if (!response.ok) throw new Error(data.error || 'Could not load the report.');
+          if (!response.ok) throw new Error(data.error || 'Could not load route history.');
           hidePinBox();
-          renderReport(data);
+          renderHistory(data);
           document.getElementById('updated').textContent = `Updated ${new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}`;
         } catch (error) {
           showMessage(error.message, 'error');
         }
       }
 
-      document.getElementById('reload-btn').addEventListener('click', loadReport);
+      document.getElementById('load-btn').addEventListener('click', loadHistory);
+      document.getElementById('route-select').addEventListener('change', loadHistory);
 
       document.getElementById('pin-form').addEventListener('submit', (event) => {
         event.preventDefault();
         officePin = document.getElementById('pin-input').value.trim();
         window.localStorage.setItem('tbyOfficePin', officePin);
-        loadReport();
+        loadRoutes();
       });
 
-      document.getElementById('date-input').value = todayDateString();
-      loadReport();
+      document.getElementById('through-input').value = todayDateString();
+      if (officePin) loadRoutes();
+      else showPinBox();
     </script>
   </body>
 </html>
