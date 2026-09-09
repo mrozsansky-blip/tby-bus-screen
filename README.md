@@ -39,10 +39,9 @@ Parking spots have no Airtable source — they're entered once via
 - `/office/bulletin` - upload/replace/remove the Bulletin screen's file
   (PIN-protected, same PIN as the other office pages)
 - `/office/morning-report` - every AM route for the day, in arrival order,
-  plus any that haven't arrived yet (PIN-protected). Same data is available
-  as JSON from `/api/office/morning-report` (PIN-protected, for staff) and
-  `/api/reports/morning-arrivals` (protected by `MORNING_REPORT_SECRET`
-  instead, for the daily report email job - see below)
+  plus any that haven't arrived yet (PIN-protected). The same report is also
+  emailed automatically once each school morning - see "Daily AM arrivals
+  email" in `SETUP-NOTES.md`
 - `/setup.html` - one-time/occasional admin tools: import routes & parking
   spots directly, or sync routes from Airtable (admin-secret protected)
 
@@ -63,8 +62,10 @@ TURSO_DATABASE_URL=your Turso database URL
 TURSO_AUTH_TOKEN=your Turso auth token
 OFFICE_PIN=PIN for the office control panel
 ADMIN_SECRET=secret for /api/admin/* routes (setup.html, sync, import)
-CRON_SECRET=secret the nightly export cron authenticates with
-MORNING_REPORT_SECRET=secret the daily morning-arrivals report job authenticates with
+CRON_SECRET=secret the nightly export cron (and the morning-report cron) authenticate with
+RESEND_API_KEY=your Resend API key, used to send the daily AM arrivals email
+MORNING_REPORT_FROM=verified sender for that email, e.g. "TBY Bus Screen <reports@yourdomain.org>"
+MORNING_REPORT_RECIPIENTS=comma-separated recipient emails, e.g. a@school.org,b@school.org
 AIRTABLE_TOKEN=your Airtable personal access token
 AIRTABLE_BASE_ID=appYCWLjqODndV4n2
 BLOB_READ_WRITE_TOKEN=from the Blob store's own page - see below
@@ -95,6 +96,7 @@ AIRTABLE_EVENT_LOG_TABLE_NAME=Bus Route Event Log
 AIRTABLE_DAILY_STATUS_TABLE_NAME=Bus Daily Status
 TEXTING_SYSTEM_URL=https://your-tby-texting-system-deployment.vercel.app
 TEXTING_MCP_AUTH_TOKEN=the tby-texting-system deployment's MCP_AUTH_TOKEN
+MORNING_REPORT_SECRET=secret for the general-purpose /api/reports/morning-arrivals JSON endpoint
 ```
 
 All of the above are required once the app runs in production (`VERCEL=1`);

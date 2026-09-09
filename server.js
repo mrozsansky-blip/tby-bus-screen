@@ -25,6 +25,15 @@ const AIRTABLE_BUS_ROUTES_TABLE_NAME = process.env.AIRTABLE_BUS_ROUTES_TABLE_NAM
 const TEXTING_SYSTEM_URL = (process.env.TEXTING_SYSTEM_URL || '').replace(/\/+$/, '');
 const TEXTING_MCP_AUTH_TOKEN = process.env.TEXTING_MCP_AUTH_TOKEN || '';
 
+// Daily AM arrival report email - sent via Resend's HTTP API (see sendMorningReportEmail below),
+// triggered by the /api/cron/morning-report cron alongside the existing nightly Airtable export.
+const RESEND_API_KEY = process.env.RESEND_API_KEY || '';
+const MORNING_REPORT_FROM = process.env.MORNING_REPORT_FROM || '';
+const MORNING_REPORT_RECIPIENTS = (process.env.MORNING_REPORT_RECIPIENTS || '')
+  .split(',')
+  .map((email) => email.trim())
+  .filter(Boolean);
+
 const STATUS_VALUES = ['Waiting', 'Arrived', 'Loading', 'Ready to Board', 'Departed', 'Delayed', 'Cancelled'];
 
 // The "Bulletin" screen shows one uploaded image or PDF full-screen instead of the bus grid (see
@@ -692,6 +701,64 @@ async function fetchMorningArrivalReport(serviceDate) {
   const notArrived = routes.filter((route) => !route.arrivalTime);
 
   return { serviceDate: date, arrived, notArrived, totalRoutes: routes.length };
+}
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+function buildMorningReportEmail(report) {
+  const arrivedLines = report.arrived.map((route) => `${route.name} — ${route.arrivalTimeFormatted}`);
+  const notArrivedLines = report.notArrived.map((route) => `${route.name} — not yet arrived`);
+  const text = [
+    `AM bus arrivals for ${report.serviceDate}:`,
+    '',
+    ...(arrivedLines.length ? arrivedLines : ['(no buses had arrived yet)']),
+    ...(notArrivedLines.length ? ['', 'Not yet arrived:', ...notArrivedLines] : []),
+  ].join('\n');
+
+  const arrivedRows = report.arrived
+    .map((route) => `<tr><td>${escapeHtml(route.name)}</td><td><strong>${escapeHtml(route.arrivalTimeFormatted)}</strong></td></tr>`)
+    .join('');
+  const notArrivedHtml = report.notArrived.length
+    ? `<p>Not yet arrived: ${report.notArrived.map((route) => escapeHtml(route.name)).join(', ')}</p>`
+    : '';
+  const html = `
+    <div style="font-family: -apple-system, Arial, sans-serif;">
+      <h2 style="margin: 0 0 8px;">AM Bus Arrivals — ${escapeHtml(report.serviceDate)}</h2>
+      <table cellpadding="6" style="border-collapse: collapse;">
+        <thead><tr><th align="left">Route</th><th align="left">Arrived</th></tr></thead>
+        <tbody>${arrivedRows || '<tr><td colspan="2">No buses had arrived yet.</td></tr>'}</tbody>
+      </table>
+      ${notArrivedHtml}
+    </div>
+  `;
+
+  return { subject: `TBY AM Bus Arrivals — ${report.serviceDate}`, text, html };
+}
+
+// Sends the AM arrival report over Resend's HTTP API (https://resend.com) - a plain fetch call
+// like the Airtable export above, rather than a new SDK dependency. All three env vars must be
+// set (see README/SETUP-NOTES) or this throws instead of silently no-op'ing, since a misconfigured
+// cron should surface as a failed run, not a report nobody gets.
+async function sendMorningReportEmail(report) {
+  if (!RESEND_API_KEY || !MORNING_REPORT_FROM || !MORNING_REPORT_RECIPIENTS.length) {
+    throw new Error('RESEND_API_KEY, MORNING_REPORT_FROM, and MORNING_REPORT_RECIPIENTS must all be configured.');
+  }
+  const { subject, text, html } = buildMorningReportEmail(report);
+  const response = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ from: MORNING_REPORT_FROM, to: MORNING_REPORT_RECIPIENTS, subject, text, html }),
+  });
+  if (!response.ok) throw new Error(`Resend send failed ${response.status}: ${await response.text()}`);
+  const data = await response.json().catch(() => ({}));
+  return { emailId: data.id || null, recipients: MORNING_REPORT_RECIPIENTS };
 }
 
 async function fetchStatus(routeId, screen) {
@@ -1650,6 +1717,21 @@ app.get('/api/cron/export-airtable', async (req, res) => {
   if (!validateCronSecret(req, res)) return;
   try {
     res.json(await exportToAirtable());
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Fires once each school morning (see vercel.json) - builds today's AM arrival report and emails
+// it via Resend to MORNING_REPORT_RECIPIENTS. See /api/reports/morning-arrivals for the same
+// report as JSON without the email step.
+app.get('/api/cron/morning-report', async (req, res) => {
+  if (!validateCronSecret(req, res)) return;
+  try {
+    const report = await fetchMorningArrivalReport();
+    const emailResult = await sendMorningReportEmail(report);
+    res.json({ ok: true, serviceDate: report.serviceDate, totalRoutes: report.totalRoutes, ...emailResult });
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: error.message });

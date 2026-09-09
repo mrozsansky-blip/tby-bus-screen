@@ -240,19 +240,45 @@ Two JSON endpoints share that same function:
 
 - `GET /api/office/morning-report` - PIN-protected (`x-office-pin`), used by
   the page above.
-- `GET /api/reports/morning-arrivals` - protected by `MORNING_REPORT_SECRET`
-  instead (checked the same way `CRON_SECRET` is: an `Authorization: Bearer
-  <secret>` header, an `x-report-secret` header, or a `?secret=` query
-  param). This is the one meant for a job running outside the office UI -
-  set `MORNING_REPORT_SECRET` in Vercel to some random value and use it from
-  there.
+- `GET /api/reports/morning-arrivals` - protected instead by
+  `MORNING_REPORT_SECRET` (checked the same way `CRON_SECRET` is: an
+  `Authorization: Bearer <secret>` header, an `x-report-secret` header, or a
+  `?secret=` query param). Optional, general-purpose - a way to pull the
+  report from outside the office UI (a spreadsheet, another script) without
+  the office PIN. Not required for the daily email below, which calls
+  `fetchMorningArrivalReport()` directly rather than going over HTTP.
 
-**Daily email.** This repo doesn't send email itself - there's no
-transactional-email dependency wired in. The actual daily send is a Claude
-Routine (a scheduled trigger) that fetches
-`/api/reports/morning-arrivals?secret=...` and emails the result via Gmail;
-ask Claude to show or change its schedule/recipients rather than looking for
-it in this codebase.
+## Daily AM arrivals email
+
+Once each school morning (`vercel.json` cron, `30 14 * * 1-5` = 10:30 AM
+Eastern **Daylight** Time, weekdays only), `GET /api/cron/morning-report`
+(`CRON_SECRET`-protected, same as the nightly Airtable export) builds the AM
+arrival report for that day and emails it via
+[Resend](https://resend.com)'s HTTP API (`sendMorningReportEmail()` in
+`server.js` - a plain `fetch` call to `api.resend.com`, no SDK dependency
+added). Requires three env vars, all in the "Environment variables" table in
+`README.md`:
+
+- `RESEND_API_KEY` - from the Resend dashboard.
+- `MORNING_REPORT_FROM` - the sender address. Resend requires a verified
+  sending domain to deliver to arbitrary recipients (its shared
+  `onboarding@resend.dev` sender only delivers to the Resend account's own
+  email) - verify a domain (or subdomain, e.g. `mail.tiferes.net`) under
+  Resend → Domains, adding the DNS records it gives you, then use an address
+  at that domain here.
+- `MORNING_REPORT_RECIPIENTS` - comma-separated recipient list, e.g.
+  `mrozsansky@tiferes.net,liba@tiferes.net,office@tiferes.net`.
+
+Any of the three missing makes `/api/cron/morning-report` fail loudly
+(500, logged) rather than silently skip sending - check the Vercel cron's
+run log (Project → Cron Jobs) if a morning's email doesn't arrive.
+
+**DST note:** the cron schedule is a fixed UTC time (`14:30`), which is
+10:30 AM only while Eastern Daylight Time is in effect (mid-March to early
+November). After the fall-back to Eastern Standard Time it'll fire at
+9:30 AM local instead - update the schedule (`30 15 * * 1-5`) around the
+clock change, and back again in spring, or move to a UTC time that's an
+acceptable send time either way.
 
   This wasn't the original design. Two earlier attempts had the office
   browser PUT the file straight to Vercel Blob storage instead (first
