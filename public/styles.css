@@ -103,8 +103,25 @@ body {
   line-height: 1;
   font-weight: 900;
   text-shadow: 2px 2px 0 rgba(0, 0, 0, 0.25);
+  padding: 0 4px;
+}
+
+/* A route name too long for its card at 5 columns (e.g. "Manchester 1" on a narrower screen) is
+   truncated here rather than left to spill past the card's edge with no width limit at all -
+   text-overflow: ellipsis only takes effect on a block-level box, not a flex container (.bus-name
+   above), and even on this inner span, a flex item's default min-width is its content's own width,
+   so without min-width: 0 it still wouldn't shrink enough to truncate. text-align is reset to left
+   because .bus-card (an ancestor) sets text-align: center, which can suppress the "…" glyph on
+   centered text; .bus-name's own justify-content: center still centers this box within the card
+   either way. */
+.bus-name span {
+  display: block;
+  max-width: 100%;
+  min-width: 0;
   overflow: hidden;
   white-space: nowrap;
+  text-overflow: ellipsis;
+  text-align: left;
 }
 
 .bus-main {
