@@ -263,11 +263,26 @@ added). Requires three env vars, all in the "Environment variables" table in
 - `MORNING_REPORT_FROM` - the sender address. Resend requires a verified
   sending domain to deliver to arbitrary recipients (its shared
   `onboarding@resend.dev` sender only delivers to the Resend account's own
-  email) - verify a domain (or subdomain, e.g. `mail.tiferes.net`) under
-  Resend → Domains, adding the DNS records it gives you, then use an address
-  at that domain here.
+  email) - use an address at that domain here.
 - `MORNING_REPORT_RECIPIENTS` - comma-separated recipient list, e.g.
   `mrozsansky@tiferes.net,liba@tiferes.net,office@tiferes.net`.
+
+**Verify a subdomain in Resend, not the bare `tiferes.net`.** `tiferes.net`
+is the school's real mail domain (it's where the recipients above live) and
+already has its own SPF/DKIM/DMARC from whoever hosts those mailboxes. Add
+`mail.tiferes.net` (or similar) as the domain in Resend instead, and use an
+address at that subdomain for `MORNING_REPORT_FROM` - a subdomain's DNS is
+independent of the root's, so verifying it can't collide with the school's
+existing mail setup no matter what records Resend asks for.
+
+If Resend's "connect your DNS provider" flow (e.g. GoDaddy) already added
+records for the bare `tiferes.net` before this was caught: remove that
+domain from Resend, then check `tiferes.net`'s DNS (GoDaddy → the domain →
+DNS → Records) for more than one TXT record starting with `v=spf1` - two
+SPF records is invalid and can break deliverability for all of
+`tiferes.net`'s mail, not just this app's. If there are two, merge them into
+one (keep the school's existing `include:`s, drop Resend's) rather than
+deleting either blindly.
 
 Any of the three missing makes `/api/cron/morning-report` fail loudly
 (500, logged) rather than silently skip sending - check the Vercel cron's
