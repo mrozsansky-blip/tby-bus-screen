@@ -695,6 +695,11 @@ async function fetchRouteTimeReport(screen, serviceDate, timeColumn) {
 
   const routes = result.rows.map((row) => ({
     name: row.display_name || row.route_code || 'Bus',
+    // Routes synced from Airtable with a Bus Color set use that color as display_name (see
+    // mapAirtableRouteRecord) and push the actual "Route Name" field into route_code instead - so
+    // for those routes `name` above is just a color ("Red") and this is the real name. Only
+    // meaningfully different from `name` for color-named routes; blank/redundant otherwise.
+    routeName: row.route_code && row.route_code !== row.display_name ? row.route_code : '',
     company: row.company || '',
     status: row.current_status || 'Waiting',
     eventTime: row.event_time || null,
@@ -728,7 +733,8 @@ function escapeHtml(value) {
 // "Route Name (Company)", or just the name when no company is on file for that route - used by
 // every report email so a route with an unset company doesn't show a dangling empty "()".
 function routeLabel(route) {
-  return route.company ? `${route.name} (${route.company})` : route.name;
+  const base = route.routeName ? `${route.name} — ${route.routeName}` : route.name;
+  return route.company ? `${base} (${route.company})` : base;
 }
 
 function buildMorningReportEmail(report) {
@@ -742,7 +748,7 @@ function buildMorningReportEmail(report) {
   ].join('\n');
 
   const arrivedRows = report.arrived
-    .map((route) => `<tr><td>${escapeHtml(route.name)}</td><td>${escapeHtml(route.company)}</td><td><strong>${escapeHtml(route.arrivalTimeFormatted)}</strong></td></tr>`)
+    .map((route) => `<tr><td>${escapeHtml(route.name)}</td><td>${escapeHtml(route.routeName)}</td><td>${escapeHtml(route.company)}</td><td><strong>${escapeHtml(route.arrivalTimeFormatted)}</strong></td></tr>`)
     .join('');
   const notArrivedHtml = report.notArrived.length
     ? `<p>Not yet arrived: ${report.notArrived.map((route) => escapeHtml(routeLabel(route))).join(', ')}</p>`
@@ -751,8 +757,8 @@ function buildMorningReportEmail(report) {
     <div style="font-family: -apple-system, Arial, sans-serif;">
       <h2 style="margin: 0 0 8px;">AM Bus Arrivals — ${escapeHtml(report.serviceDate)}</h2>
       <table cellpadding="6" style="border-collapse: collapse;">
-        <thead><tr><th align="left">Route</th><th align="left">Company</th><th align="left">Arrived</th></tr></thead>
-        <tbody>${arrivedRows || '<tr><td colspan="3">No buses had arrived yet.</td></tr>'}</tbody>
+        <thead><tr><th align="left">Route</th><th align="left">Route Name</th><th align="left">Company</th><th align="left">Arrived</th></tr></thead>
+        <tbody>${arrivedRows || '<tr><td colspan="4">No buses had arrived yet.</td></tr>'}</tbody>
       </table>
       ${notArrivedHtml}
     </div>
@@ -793,7 +799,10 @@ function isFridayServiceDate(serviceDate) {
   return new Date(`${serviceDate}T00:00:00Z`).getUTCDay() === 5;
 }
 
-const DISMISSAL_SCREEN_LABELS = {
+// Human-readable label per screen - used by the afternoon report's per-screen sections and the
+// per-route history report below.
+const SCREEN_LABELS = {
+  morning: 'Morning Arrival',
   'pri-dismissal': 'PRI Dismissal',
   'from-school': 'From School Dismissal',
   'friday-dismissal': 'Friday Dismissal',
@@ -811,13 +820,78 @@ async function fetchAfternoonDismissalReport(serviceDate) {
     const rename = (route) => ({ ...route, departureTime: route.eventTime, departureTimeFormatted: route.eventTimeFormatted });
     sections.push({
       screen,
-      label: DISMISSAL_SCREEN_LABELS[screen] || screen,
+      label: SCREEN_LABELS[screen] || screen,
       departed: done.map(rename),
       notDeparted: pending.map(rename),
       totalRoutes,
     });
   }
   return { serviceDate: date, sections };
+}
+
+// Every active route, for the dropdown on /office/route-history. Not screen-filtered - a route
+// only ever shows up on the screen(s) its own workflow_type/use_friday put it on anyway.
+async function fetchRouteList() {
+  await ensureSchema();
+  const result = await run(
+    `SELECT id, display_name, route_code, company, workflow_type FROM routes
+     WHERE active = 1 ORDER BY workflow_type ASC, sort_order ASC, display_name COLLATE NOCASE ASC`
+  );
+  return result.rows.map((row) => ({
+    id: row.id,
+    name: row.display_name || row.route_code || 'Bus',
+    routeName: row.route_code && row.route_code !== row.display_name ? row.route_code : '',
+    company: row.company || '',
+    workflowType: row.workflow_type || '',
+  }));
+}
+
+// Every day recorded for one route, from whenever it first has data (in practice, since the
+// school year started using this app - there's no separate "school year start date" tracked here
+// to filter against) through `throughDate` (defaults to today). A route can appear under more than
+// one screen (an AM route also runs Friday mornings - see screenFilter's friday-dismissal clause),
+// so this returns one row per service_date+screen actually recorded, oldest first, each showing
+// whichever timestamp matters for its own screen (arrival_time for morning, else departure_time).
+async function fetchRouteHistoryReport(routeId, throughDate) {
+  await ensureSchema();
+  const date = throughDate || toSchoolDateString();
+  const routeRow = await run(
+    `SELECT id, display_name, route_code, company FROM routes WHERE id = ? LIMIT 1`,
+    [routeId]
+  );
+  if (!routeRow.rows.length) throw new Error('Route not found.');
+  const routeInfo = routeRow.rows[0];
+
+  const result = await run(
+    `SELECT service_date, screen, current_status, arrival_time, departure_time
+     FROM daily_status
+     WHERE route_id = ? AND service_date <= ?
+     ORDER BY service_date ASC, screen ASC`,
+    [routeId, date]
+  );
+
+  const days = result.rows.map((row) => {
+    const eventTime = row.screen === 'morning' ? row.arrival_time : row.departure_time;
+    return {
+      serviceDate: row.service_date,
+      screen: row.screen,
+      screenLabel: SCREEN_LABELS[row.screen] || row.screen,
+      status: row.current_status || 'Waiting',
+      eventTime: eventTime || null,
+      eventTimeFormatted: eventTime ? formatSchoolTime(new Date(eventTime)) : null,
+    };
+  });
+
+  return {
+    route: {
+      id: routeInfo.id,
+      name: routeInfo.display_name || routeInfo.route_code || 'Bus',
+      routeName: routeInfo.route_code && routeInfo.route_code !== routeInfo.display_name ? routeInfo.route_code : '',
+      company: routeInfo.company || '',
+    },
+    through: date,
+    days,
+  };
 }
 
 function buildAfternoonReportEmail(report) {
@@ -835,7 +909,7 @@ function buildAfternoonReportEmail(report) {
   const htmlSections = report.sections
     .map((section) => {
       const rows = section.departed
-        .map((route) => `<tr><td>${escapeHtml(route.name)}</td><td>${escapeHtml(route.company)}</td><td><strong>${escapeHtml(route.departureTimeFormatted)}</strong></td></tr>`)
+        .map((route) => `<tr><td>${escapeHtml(route.name)}</td><td>${escapeHtml(route.routeName)}</td><td>${escapeHtml(route.company)}</td><td><strong>${escapeHtml(route.departureTimeFormatted)}</strong></td></tr>`)
         .join('');
       const notDepartedHtml = section.notDeparted.length
         ? `<p>Not yet departed: ${section.notDeparted.map((route) => escapeHtml(routeLabel(route))).join(', ')}</p>`
@@ -843,8 +917,8 @@ function buildAfternoonReportEmail(report) {
       return `
         <h3 style="margin: 16px 0 8px;">${escapeHtml(section.label)}</h3>
         <table cellpadding="6" style="border-collapse: collapse;">
-          <thead><tr><th align="left">Route</th><th align="left">Company</th><th align="left">Departed</th></tr></thead>
-          <tbody>${rows || '<tr><td colspan="3">No buses had departed yet.</td></tr>'}</tbody>
+          <thead><tr><th align="left">Route</th><th align="left">Route Name</th><th align="left">Company</th><th align="left">Departed</th></tr></thead>
+          <tbody>${rows || '<tr><td colspan="4">No buses had departed yet.</td></tr>'}</tbody>
         </table>
         ${notDepartedHtml}
       `;
@@ -1447,6 +1521,29 @@ app.get('/api/reports/afternoon-dismissals', async (req, res) => {
   }
 });
 
+// Powers the route picker on /office/route-history.
+app.get('/api/office/routes', async (req, res) => {
+  if (!validateOfficePin(req, res)) return;
+  try {
+    res.json({ routes: await fetchRouteList() });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/office/route-history', async (req, res) => {
+  if (!validateOfficePin(req, res)) return;
+  if (!req.query.routeId) return res.status(400).json({ error: 'routeId is required.' });
+  try {
+    const report = await fetchRouteHistoryReport(req.query.routeId, req.query.through);
+    res.json(report);
+  } catch (error) {
+    console.error(error);
+    res.status(error.message === 'Route not found.' ? 404 : 500).json({ error: error.message });
+  }
+});
+
 // Registered before the /api/office/:screen wildcard below - Express matches routes in
 // registration order, and a wildcard segment (:screen) would otherwise swallow this literal path
 // (:screen = "screen-override") before it ever reached this handler.
@@ -1892,6 +1989,10 @@ app.get('/office/morning-report', (req, res) => {
 
 app.get('/office/afternoon-report', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'office-afternoon-report.html'));
+});
+
+app.get('/office/route-history', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'office-route-history.html'));
 });
 
 app.get(['/current', '/from-school', '/pri-dismissal', '/friday-dismissal', '/bulletin'], (req, res) => {

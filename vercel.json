@@ -1,10 +1,6 @@
 {
   "crons": [
     {
-      "path": "/api/cron/export-airtable",
-      "schedule": "30 3 * * *"
-    },
-    {
       "path": "/api/cron/morning-report",
       "schedule": "30 14 * * 1-5"
     },
@@ -31,6 +27,7 @@
     { "source": "/office/bulletin", "destination": "/api/index" },
     { "source": "/office/morning-report", "destination": "/api/index" },
     { "source": "/office/afternoon-report", "destination": "/api/index" },
+    { "source": "/office/route-history", "destination": "/api/index" },
     { "source": "/api/(.*)", "destination": "/api/index" }
   ]
 }

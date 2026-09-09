@@ -15,11 +15,15 @@ is used two ways:
   into Turso. Re-run it any time the roster changes; it's safe to run
   repeatedly. See `SETUP-NOTES.md` for exactly how Airtable fields map to
   routes.
-- **Nightly history export** — once a day, a cron job copies the day's
-  status events out of Turso into two Airtable tables, `Bus Route Event Log`
-  and `Bus Daily Status`, so the office has a permanent, searchable record.
-  This is one-way (Turso → Airtable); editing those tables does not affect
-  the live screens.
+- **History export (manual)** — `GET /api/cron/export-airtable`
+  (`CRON_SECRET`-protected) or the "Export to Airtable" button on
+  `/setup.html` copies the day's status events out of Turso into two
+  Airtable tables, `Bus Route Event Log` and `Bus Daily Status`, for a
+  permanent, searchable record. This is one-way (Turso → Airtable); editing
+  those tables does not affect the live screens. It's no longer scheduled
+  automatically (the daily arrival/departure report emails cover the day-to-day
+  need) - `vercel.json` has no cron for it, so nothing runs unless you
+  trigger it yourself or add a cron back.
 
 Parking spots have no Airtable source — they're entered once via
 `/setup.html`.
@@ -46,6 +50,9 @@ Parking spots have no Airtable source — they're entered once via
   + From School, or just Friday Dismissal on a Friday), in departure order,
   plus any that haven't left yet (PIN-protected). Also emailed automatically
   each afternoon - see "Daily PM departures email" in `SETUP-NOTES.md`
+- `/office/route-history` - pick one route from a dropdown and see its
+  recorded time (arrival or departure, whichever applies) for every school
+  day on record through a chosen date (PIN-protected)
 - `/setup.html` - one-time/occasional admin tools: import routes & parking
   spots directly, or sync routes from Airtable (admin-secret protected)
 

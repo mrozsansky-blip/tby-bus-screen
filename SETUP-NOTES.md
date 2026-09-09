@@ -284,6 +284,17 @@ date picker does this) to see a past day instead - for a past date it only
 reads what's already in `daily_status`, it doesn't backfill Waiting rows the
 way today's report does via `ensureDailyStatus`.
 
+**"Route Name" column.** `mapAirtableRouteRecord()` sets `displayName: color
+|| routeName` - a route synced from Airtable with a Bus Color set shows that
+color as its name everywhere in this app (`display_name`), and the actual
+"Route Name" Airtable field ends up in `route_code` instead, unused for
+display. That's fine for the public dismissal screens (kids look for a
+color, not a name), but it means color-named routes would otherwise show up
+in every report as just "Red" with no way to tell which real route that is.
+Every report below adds a **Route Name** column/line showing `route_code`
+whenever it differs from `display_name` - blank for routes that were never
+color-named in the first place, so nothing looks redundant.
+
 Two JSON endpoints share that same function:
 
 - `GET /api/office/morning-report` - PIN-protected (`x-office-pin`), used by
@@ -360,8 +371,37 @@ Standard Time they'll fire an hour earlier local (9:30 AM/4:00 PM) - update
 the schedules (`30 15 * * 1-5`, `0 22 * * 1-5`) around the clock change, and
 back again in spring, or move to UTC times that are acceptable either way.
 
-**Vercel cron limits:** this project now defines three crons (nightly
-Airtable export + the two report emails). Vercel's Hobby plan caps a
-project at 2 cron jobs - if the account is on Hobby, either upgrade to Pro
-or drop one of these crons before deploying, or the deployment/cron
-registration will be rejected.
+**Vercel cron limits:** this project defines two crons (the morning and
+afternoon report emails). The nightly Airtable export (see "History export
+(manual)" in `README.md`) used to be a third, scheduled cron here too, but
+isn't anymore - the daily report emails cover the day-to-day need, and it's
+still available to trigger by hand if wanted. Vercel's Hobby plan caps a
+project at 2 cron jobs, so this fits even without Pro; add a third cron
+back only on a Pro (or higher) plan.
+
+# Route history report
+
+`/office/route-history` is a lookup tool rather than a daily report: pick
+one route from a dropdown, pick a "through" date (defaults to today), and
+see every day recorded for that route up through it, oldest first - the
+per-day timestamp is `arrival_time` for a morning route or `departure_time`
+for anything else, whichever screen that day's row is actually on (see
+below for why a route can span more than one screen).
+
+- `GET /api/office/routes` - PIN-protected, every active route (id, name,
+  route name, company, workflow type) for the dropdown.
+- `GET /api/office/route-history?routeId=...&through=YYYY-MM-DD` -
+  PIN-protected. `routeId` is required (400 without it); an unknown route is
+  a 404. `fetchRouteHistoryReport()` in `server.js` queries `daily_status`
+  directly for that `route_id` with `service_date <= through`, no
+  `screenFilter` involved - so it naturally picks up every screen a route
+  has ever had a row on, including a Friday-morning row for an AM route
+  (`screenFilter`'s `friday-dismissal` clause includes `workflow_type = 'To
+  School Arrival Only'` - see "Airtable → Turso route sync notes" above).
+
+**No school-year-start setting.** "The school year" here just means
+"whenever this route's data starts" - there's no separate start-date config
+to filter against (Airtable's `School Years` table only carries an "Is
+Current Year" flag, no date range - see `findCurrentSchoolYearRecordId()`).
+In practice that's equivalent, since `daily_status` rows only ever exist
+from whenever the school started using this app for that route.

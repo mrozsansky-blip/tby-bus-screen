@@ -32,6 +32,7 @@
             <a href="/office/morning">Morning</a>
             <a href="/office/from-school">Routes</a>
             <a href="/office/afternoon-report">Afternoon Report</a>
+            <a href="/office/route-history">Route History</a>
           </nav>
           <div id="updated" class="updated"></div>
         </div>
@@ -120,6 +121,7 @@
               <tr>
                 <td>${index + 1}</td>
                 <td>${escapeHtml(route.name)}</td>
+                <td>${escapeHtml(route.routeName)}</td>
                 <td>${escapeHtml(route.company)}</td>
                 <td class="time">${escapeHtml(route.arrivalTimeFormatted)}</td>
               </tr>
@@ -127,7 +129,7 @@
             .join('');
           arrivedBox.innerHTML = `
             <table class="report-table">
-              <thead><tr><th>#</th><th>Route</th><th>Company</th><th>Arrived</th></tr></thead>
+              <thead><tr><th>#</th><th>Route</th><th>Route Name</th><th>Company</th><th>Arrived</th></tr></thead>
               <tbody>${rows}</tbody>
             </table>
           `;
@@ -138,11 +140,11 @@
           notArrivedBox.innerHTML = '<p class="empty-note">Every AM route has arrived.</p>';
         } else {
           const rows = report.notArrived
-            .map((route) => `<tr><td>${escapeHtml(route.name)}</td><td>${escapeHtml(route.company)}</td><td class="waiting">Waiting</td></tr>`)
+            .map((route) => `<tr><td>${escapeHtml(route.name)}</td><td>${escapeHtml(route.routeName)}</td><td>${escapeHtml(route.company)}</td><td class="waiting">Waiting</td></tr>`)
             .join('');
           notArrivedBox.innerHTML = `
             <table class="report-table">
-              <thead><tr><th>Route</th><th>Company</th><th>Status</th></tr></thead>
+              <thead><tr><th>Route</th><th>Route Name</th><th>Company</th><th>Status</th></tr></thead>
               <tbody>${rows}</tbody>
             </table>
           `;
