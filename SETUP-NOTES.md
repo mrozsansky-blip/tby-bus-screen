@@ -259,30 +259,26 @@ arrival report for that day and emails it via
 added). Requires three env vars, all in the "Environment variables" table in
 `README.md`:
 
-- `RESEND_API_KEY` - from the Resend dashboard.
-- `MORNING_REPORT_FROM` - the sender address. Resend requires a verified
-  sending domain to deliver to arbitrary recipients (its shared
-  `onboarding@resend.dev` sender only delivers to the Resend account's own
-  email) - use an address at that domain here.
+- `RESEND_API_KEY` - from the Resend dashboard (Settings → API Keys).
+- `MORNING_REPORT_FROM` - e.g. `TBY Bus Arrivals <report@reports.tiferes.net>`.
+  Resend requires a verified sending domain to deliver to arbitrary
+  recipients (its shared `onboarding@resend.dev` sender only delivers to the
+  Resend account's own email).
 - `MORNING_REPORT_RECIPIENTS` - comma-separated recipient list, e.g.
   `mrozsansky@tiferes.net,liba@tiferes.net,office@tiferes.net`.
 
-**Verify a subdomain in Resend, not the bare `tiferes.net`.** `tiferes.net`
-is the school's real mail domain (it's where the recipients above live) and
-already has its own SPF/DKIM/DMARC from whoever hosts those mailboxes. Add
-`mail.tiferes.net` (or similar) as the domain in Resend instead, and use an
-address at that subdomain for `MORNING_REPORT_FROM` - a subdomain's DNS is
-independent of the root's, so verifying it can't collide with the school's
-existing mail setup no matter what records Resend asks for.
-
-If Resend's "connect your DNS provider" flow (e.g. GoDaddy) already added
-records for the bare `tiferes.net` before this was caught: remove that
-domain from Resend, then check `tiferes.net`'s DNS (GoDaddy → the domain →
-DNS → Records) for more than one TXT record starting with `v=spf1` - two
-SPF records is invalid and can break deliverability for all of
-`tiferes.net`'s mail, not just this app's. If there are two, merge them into
-one (keep the school's existing `include:`s, drop Resend's) rather than
-deleting either blindly.
+**Sending domain: `reports.tiferes.net`**, verified in Resend (DKIM, the
+`send.reports` MAIL FROM subdomain's MX, and its SPF TXT record are all
+green). Deliberately a subdomain, not the bare `tiferes.net` - that's the
+school's real mail domain (Google Workspace, where the recipients above
+live), so keeping this isolated under `reports.tiferes.net` means nothing
+here can collide with the school's existing SPF/DKIM/MX no matter what
+Resend or GoDaddy do to it. `MORNING_REPORT_FROM` must be an address at
+`reports.tiferes.net` (any local part works, e.g. `report@reports.tiferes.net`)
+- GoDaddy's own "SPF management" feature initially rewrote the `send.reports`
+SPF TXT record into its own indirect `_spfm.` format, which didn't match
+what Resend's checker expected; re-adding it as the literal
+`v=spf1 include:amazonses.com ~all` fixed it.
 
 Any of the three missing makes `/api/cron/morning-report` fail loudly
 (500, logged) rather than silently skip sending - check the Vercel cron's
