@@ -665,42 +665,55 @@ async function fetchRoutesForScreen(screen, options = {}) {
 // the /api/reports/morning-arrivals endpoint the daily report email job calls. Only touches
 // ensureDailyStatus (which would create today's Waiting rows) when reporting on today itself - a
 // report for a past date should reflect what actually happened, not backfill rows for it.
-async function fetchMorningArrivalReport(serviceDate) {
+// Every active route on a given screen for a given service day, with whichever timestamp column
+// matters for that screen (arrival_time for morning, departure_time for a dismissal screen) -
+// split into routes that hit it (earliest first) and ones still pending. Shared by the morning
+// arrival report and the afternoon dismissal report below - `timeColumn` is always one of our own
+// two hardcoded column names, never request input, so building it into the SQL string is safe.
+async function fetchRouteTimeReport(screen, serviceDate, timeColumn) {
   await ensureSchema();
   const date = serviceDate || toSchoolDateString();
-  const filter = screenFilter('morning');
+  const filter = screenFilter(screen);
 
   if (date === toSchoolDateString()) {
     const routes = await run(`SELECT id FROM routes WHERE active = 1 AND (${filter.sql})`, filter.args);
-    for (const route of routes.rows) await ensureDailyStatus(route.id, 'morning', date);
+    for (const route of routes.rows) await ensureDailyStatus(route.id, screen, date);
   }
 
   const result = await run(
-    `SELECT routes.display_name, routes.route_code, routes.sort_order,
-            daily_status.current_status, daily_status.arrival_time
+    `SELECT routes.display_name, routes.route_code, routes.company, routes.sort_order,
+            daily_status.current_status, daily_status.${timeColumn} AS event_time
      FROM routes
      JOIN daily_status
        ON daily_status.route_id = routes.id
       AND daily_status.service_date = ?
-      AND daily_status.screen = 'morning'
+      AND daily_status.screen = ?
      WHERE routes.active = 1 AND (${filter.sql})
      ORDER BY routes.sort_order ASC, routes.display_name COLLATE NOCASE ASC`,
-    [date, ...filter.args]
+    [date, screen, ...filter.args]
   );
 
   const routes = result.rows.map((row) => ({
     name: row.display_name || row.route_code || 'Bus',
+    company: row.company || '',
     status: row.current_status || 'Waiting',
-    arrivalTime: row.arrival_time || null,
-    arrivalTimeFormatted: row.arrival_time ? formatSchoolTime(new Date(row.arrival_time)) : null,
+    eventTime: row.event_time || null,
+    eventTimeFormatted: row.event_time ? formatSchoolTime(new Date(row.event_time)) : null,
   }));
 
-  const arrived = routes
-    .filter((route) => route.arrivalTime)
-    .sort((a, b) => a.arrivalTime.localeCompare(b.arrivalTime));
-  const notArrived = routes.filter((route) => !route.arrivalTime);
+  const done = routes
+    .filter((route) => route.eventTime)
+    .sort((a, b) => a.eventTime.localeCompare(b.eventTime));
+  const pending = routes.filter((route) => !route.eventTime);
 
-  return { serviceDate: date, arrived, notArrived, totalRoutes: routes.length };
+  return { done, pending, totalRoutes: routes.length };
+}
+
+async function fetchMorningArrivalReport(serviceDate) {
+  const date = serviceDate || toSchoolDateString();
+  const { done, pending, totalRoutes } = await fetchRouteTimeReport('morning', date, 'arrival_time');
+  const rename = (route) => ({ ...route, arrivalTime: route.eventTime, arrivalTimeFormatted: route.eventTimeFormatted });
+  return { serviceDate: date, arrived: done.map(rename), notArrived: pending.map(rename), totalRoutes };
 }
 
 function escapeHtml(value) {
@@ -712,9 +725,15 @@ function escapeHtml(value) {
     .replace(/'/g, '&#039;');
 }
 
+// "Route Name (Company)", or just the name when no company is on file for that route - used by
+// every report email so a route with an unset company doesn't show a dangling empty "()".
+function routeLabel(route) {
+  return route.company ? `${route.name} (${route.company})` : route.name;
+}
+
 function buildMorningReportEmail(report) {
-  const arrivedLines = report.arrived.map((route) => `${route.name} — ${route.arrivalTimeFormatted}`);
-  const notArrivedLines = report.notArrived.map((route) => `${route.name} — not yet arrived`);
+  const arrivedLines = report.arrived.map((route) => `${routeLabel(route)} — ${route.arrivalTimeFormatted}`);
+  const notArrivedLines = report.notArrived.map((route) => `${routeLabel(route)} — not yet arrived`);
   const text = [
     `AM bus arrivals for ${report.serviceDate}:`,
     '',
@@ -723,17 +742,17 @@ function buildMorningReportEmail(report) {
   ].join('\n');
 
   const arrivedRows = report.arrived
-    .map((route) => `<tr><td>${escapeHtml(route.name)}</td><td><strong>${escapeHtml(route.arrivalTimeFormatted)}</strong></td></tr>`)
+    .map((route) => `<tr><td>${escapeHtml(route.name)}</td><td>${escapeHtml(route.company)}</td><td><strong>${escapeHtml(route.arrivalTimeFormatted)}</strong></td></tr>`)
     .join('');
   const notArrivedHtml = report.notArrived.length
-    ? `<p>Not yet arrived: ${report.notArrived.map((route) => escapeHtml(route.name)).join(', ')}</p>`
+    ? `<p>Not yet arrived: ${report.notArrived.map((route) => escapeHtml(routeLabel(route))).join(', ')}</p>`
     : '';
   const html = `
     <div style="font-family: -apple-system, Arial, sans-serif;">
       <h2 style="margin: 0 0 8px;">AM Bus Arrivals — ${escapeHtml(report.serviceDate)}</h2>
       <table cellpadding="6" style="border-collapse: collapse;">
-        <thead><tr><th align="left">Route</th><th align="left">Arrived</th></tr></thead>
-        <tbody>${arrivedRows || '<tr><td colspan="2">No buses had arrived yet.</td></tr>'}</tbody>
+        <thead><tr><th align="left">Route</th><th align="left">Company</th><th align="left">Arrived</th></tr></thead>
+        <tbody>${arrivedRows || '<tr><td colspan="3">No buses had arrived yet.</td></tr>'}</tbody>
       </table>
       ${notArrivedHtml}
     </div>
