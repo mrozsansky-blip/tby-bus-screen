@@ -1144,6 +1144,9 @@ async function findCurrentSchoolYearRecordId() {
 // - Anything else (Other, Early dismissal, Both, blank) imports inactive (hidden from every
 //   screen) and gets flagged so the office can review and fix it in Airtable or Turso by hand.
 // - Airtable has no concept of Friday dismissal today, so useFriday is always false here.
+// - Any route whose name contains "carpool" (case-insensitive) always imports inactive, AM or PM
+//   - kept in Airtable for record-keeping, never meant to show up as a bus anywhere in this app.
+//   Not flagged for review (see syncRoutesFromAirtable) since it's intentional, not an error.
 function mapAirtableRouteRecord(record) {
   const fields = record.fields || {};
   const routeName = fields['Route Name'] || record.id;
@@ -1168,6 +1171,11 @@ function mapAirtableRouteRecord(record) {
   } else {
     active = false; // "Both" or an unexpected AM/PM value - needs manual review
   }
+
+  // Carpool rows exist in Airtable for record-keeping but were never meant to show up as a bus on
+  // any live screen or report - excluded regardless of AM/PM, and regardless of what the branches
+  // above decided, so this survives every re-sync without needing the Airtable record touched.
+  if (/carpool/i.test(routeName)) active = false;
 
   return {
     id: slugify(routeName),
@@ -1197,7 +1205,9 @@ async function syncRoutesFromAirtable() {
   const flagged = [];
   const mappedRoutes = currentYearRecords.map((record) => {
     const mapped = mapAirtableRouteRecord(record);
-    if (!mapped.active) {
+    // Carpool rows are intentionally always inactive (see mapAirtableRouteRecord) - flagging them
+    // here too would show up as a false "needs a manual look" alarm on every sync.
+    if (!mapped.active && !/carpool/i.test(mapped.routeCode)) {
       flagged.push({ routeCode: mapped.routeCode, ampm: mapped.ampmRaw, dismissal: mapped.dismissalRaw });
     }
     return mapped;

@@ -28,6 +28,21 @@ Screen assignment (`workflow_type` / `active`):
 | `PM`      | `Primary dismissal`   | `PRI Dismissal`, active                           |
 | `PM`      | `Other`, `Early dismissal`, blank | imported **inactive**, flagged in the sync response |
 | `Both` or anything unexpected        | imported **inactive**, flagged             |
+| Route Name contains "carpool" (any case, AM or PM) | imported **inactive**, *not* flagged - see below |
+
+**Carpool rows.** Kept in Airtable for record-keeping (they represent real
+students, just not a bus), but never meant to show up as a route anywhere in
+this app - `mapAirtableRouteRecord()` always imports them inactive
+regardless of AM/PM or Primary Dismissal, and `syncRoutesFromAirtable()`
+deliberately excludes them from the sync response's `flagged` list, since
+that's for routes that need a human to fix something in Airtable, and a
+carpool row doesn't. To exclude a specific non-carpool route the same way
+(kept in Airtable, hidden from every screen/report) without a code change:
+for a **PM** route, change its `Primary Dismissal` field to anything other
+than `Regular dismissal`/`Primary dismissal` (e.g. `Other`) and re-sync -
+the table above already treats that as inactive. There's no equivalent
+zero-code lever for excluding one specific **AM** route (every AM route
+imports active) short of the carpool-name rule above.
 
 Two things this sync deliberately does **not** do, both by explicit choice
 when this was set up:
