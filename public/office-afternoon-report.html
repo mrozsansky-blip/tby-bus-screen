@@ -3,12 +3,13 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>TBY Bus Office - Morning Report</title>
+    <title>TBY Bus Office - Afternoon Report</title>
     <link rel="stylesheet" href="/office.css" />
     <style>
       .report-shell { max-width: 640px; margin: 0 auto; padding: 14px; }
       .report-card { background: var(--card); border: 2px solid var(--border); border-radius: 14px; padding: 18px; margin-top: 14px; }
       .report-card h2 { margin: 0 0 10px; font-size: 18px; }
+      .report-card h3 { margin: 14px 0 8px; font-size: 15px; }
       .report-card p.hint { margin: 0 0 12px; color: var(--muted); font-size: 13px; font-weight: 600; }
       .report-table { width: 100%; border-collapse: collapse; font-size: 14px; }
       .report-table th, .report-table td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--border); }
@@ -25,13 +26,12 @@
       <header class="office-header">
         <div>
           <div class="eyebrow">TBY Bus Office</div>
-          <h1>Morning Arrival Report</h1>
+          <h1>Afternoon Dismissal Report</h1>
         </div>
         <div class="header-right">
           <nav class="tabs">
-            <a href="/office/morning">Morning</a>
             <a href="/office/from-school">Routes</a>
-            <a href="/office/afternoon-report">Afternoon Report</a>
+            <a href="/office/morning-report">Morning Report</a>
             <a href="/office/route-history">Route History</a>
           </nav>
           <div id="updated" class="updated"></div>
@@ -40,7 +40,7 @@
 
       <section id="pin-box" class="pin-box hidden">
         <h2>Office PIN</h2>
-        <p>Enter the office PIN to view the morning arrival report.</p>
+        <p>Enter the office PIN to view the afternoon dismissal report.</p>
         <form id="pin-form">
           <input id="pin-input" type="password" inputmode="numeric" autocomplete="current-password" placeholder="PIN" />
           <button type="submit">Open</button>
@@ -51,7 +51,7 @@
 
       <div id="report-content" class="report-shell hidden">
         <div class="report-card">
-          <p class="hint">Every AM route, in the order each bus arrived. Reload after buses finish arriving to see the finished list.</p>
+          <p class="hint" id="coverage-hint">Every dismissal route that ran that day, in the order each bus left.</p>
           <div class="date-row">
             <label for="date-input">Date</label>
             <input id="date-input" type="date" />
@@ -59,15 +59,7 @@
           </div>
         </div>
 
-        <div class="report-card">
-          <h2>Arrived</h2>
-          <div id="arrived-box"></div>
-        </div>
-
-        <div class="report-card">
-          <h2>Not yet arrived</h2>
-          <div id="not-arrived-box"></div>
-        </div>
+        <div id="sections"></div>
       </div>
     </main>
 
@@ -75,9 +67,6 @@
       let officePin = window.localStorage.getItem('tbyOfficePin') || '';
 
       function todayDateString() {
-        // Matches the server's toSchoolDateString() shape (America/New_York by default) closely
-        // enough for the date picker's default; the server is still the source of truth for what
-        // "today" means once a date is actually submitted.
         return new Intl.DateTimeFormat('en-CA', { year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
       }
 
@@ -109,46 +98,67 @@
           .replace(/'/g, '&#039;');
       }
 
-      function renderReport(report) {
-        document.getElementById('date-input').value = report.serviceDate;
+      function renderSection(section) {
+        const card = document.createElement('div');
+        card.className = 'report-card';
 
-        const arrivedBox = document.getElementById('arrived-box');
-        if (!report.arrived.length) {
-          arrivedBox.innerHTML = '<p class="empty-note">No buses have arrived yet.</p>';
+        const heading = document.createElement('h2');
+        heading.textContent = section.label;
+        card.appendChild(heading);
+
+        const departedWrap = document.createElement('div');
+        if (!section.departed.length) {
+          departedWrap.innerHTML = '<p class="empty-note">No buses have departed yet.</p>';
         } else {
-          const rows = report.arrived
+          const rows = section.departed
             .map((route, index) => `
               <tr>
                 <td>${index + 1}</td>
                 <td>${escapeHtml(route.name)}</td>
                 <td>${escapeHtml(route.routeName)}</td>
                 <td>${escapeHtml(route.company)}</td>
-                <td class="time">${escapeHtml(route.arrivalTimeFormatted)}</td>
+                <td class="time">${escapeHtml(route.departureTimeFormatted)}</td>
               </tr>
             `)
             .join('');
-          arrivedBox.innerHTML = `
+          departedWrap.innerHTML = `
             <table class="report-table">
-              <thead><tr><th>#</th><th>Route</th><th>Route Name</th><th>Company</th><th>Arrived</th></tr></thead>
+              <thead><tr><th>#</th><th>Route</th><th>Route Name</th><th>Company</th><th>Departed</th></tr></thead>
               <tbody>${rows}</tbody>
             </table>
           `;
         }
+        card.appendChild(departedWrap);
 
-        const notArrivedBox = document.getElementById('not-arrived-box');
-        if (!report.notArrived.length) {
-          notArrivedBox.innerHTML = '<p class="empty-note">Every AM route has arrived.</p>';
-        } else {
-          const rows = report.notArrived
+        if (section.notDeparted.length) {
+          const heading2 = document.createElement('h3');
+          heading2.textContent = 'Not yet departed';
+          card.appendChild(heading2);
+          const rows = section.notDeparted
             .map((route) => `<tr><td>${escapeHtml(route.name)}</td><td>${escapeHtml(route.routeName)}</td><td>${escapeHtml(route.company)}</td><td class="waiting">Waiting</td></tr>`)
             .join('');
-          notArrivedBox.innerHTML = `
+          const table = document.createElement('div');
+          table.innerHTML = `
             <table class="report-table">
               <thead><tr><th>Route</th><th>Route Name</th><th>Company</th><th>Status</th></tr></thead>
               <tbody>${rows}</tbody>
             </table>
           `;
+          card.appendChild(table);
         }
+
+        return card;
+      }
+
+      function renderReport(report) {
+        document.getElementById('date-input').value = report.serviceDate;
+        const sectionsBox = document.getElementById('sections');
+        sectionsBox.innerHTML = '';
+        if (!report.sections.length) {
+          sectionsBox.innerHTML = '<div class="report-card"><p class="empty-note">No dismissal routes are scheduled for this date.</p></div>';
+          return;
+        }
+        report.sections.forEach((section) => sectionsBox.appendChild(renderSection(section)));
       }
 
       async function loadReport() {
@@ -158,7 +168,7 @@
         }
         const date = document.getElementById('date-input').value || undefined;
         try {
-          const url = new URL('/api/office/morning-report', window.location.origin);
+          const url = new URL('/api/office/afternoon-report', window.location.origin);
           if (date) url.searchParams.set('date', date);
           const response = await fetch(url, { cache: 'no-store', headers: { 'x-office-pin': officePin } });
           if (response.status === 401) {
