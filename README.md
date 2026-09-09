@@ -42,6 +42,10 @@ Parking spots have no Airtable source — they're entered once via
   plus any that haven't arrived yet (PIN-protected). The same report is also
   emailed automatically once each school morning - see "Daily AM arrivals
   email" in `SETUP-NOTES.md`
+- `/office/afternoon-report` - every dismissal route that ran that day (PRI
+  + From School, or just Friday Dismissal on a Friday), in departure order,
+  plus any that haven't left yet (PIN-protected). Also emailed automatically
+  each afternoon - see "Daily PM departures email" in `SETUP-NOTES.md`
 - `/setup.html` - one-time/occasional admin tools: import routes & parking
   spots directly, or sync routes from Airtable (admin-secret protected)
 
@@ -62,9 +66,9 @@ TURSO_DATABASE_URL=your Turso database URL
 TURSO_AUTH_TOKEN=your Turso auth token
 OFFICE_PIN=PIN for the office control panel
 ADMIN_SECRET=secret for /api/admin/* routes (setup.html, sync, import)
-CRON_SECRET=secret the nightly export cron (and the morning-report cron) authenticate with
-RESEND_API_KEY=your Resend API key, used to send the daily AM arrivals email
-MORNING_REPORT_FROM=verified sender for that email, e.g. "TBY Bus Arrivals <report@reports.tiferes.net>"
+CRON_SECRET=secret the nightly export cron and both report crons authenticate with
+RESEND_API_KEY=your Resend API key, used to send the daily arrival/departure report emails
+MORNING_REPORT_FROM=verified sender for those emails, e.g. "TBY Bus Report <report@reports.tiferes.net>"
 MORNING_REPORT_RECIPIENTS=comma-separated recipient emails, e.g. a@school.org,b@school.org
 AIRTABLE_TOKEN=your Airtable personal access token
 AIRTABLE_BASE_ID=appYCWLjqODndV4n2

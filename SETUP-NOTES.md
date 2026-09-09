@@ -224,73 +224,6 @@ pathname, filename, mime type, size, upload time).
   client - the browser talks only to this app's own domain, never to
   Vercel's infrastructure directly.
 
-# Morning arrival report
-
-`/office/morning-report` shows every AM ("To School Arrival Only") route for
-a service day, split into buses that have arrived (earliest first, with
-their arrival time) and ones still Waiting. It's a plain read-only view -
-`fetchMorningArrivalReport(serviceDate)` in `server.js` reuses the same
-`daily_status` rows the live `/office/morning` board writes, it doesn't add
-any new tracking. Defaults to today; pass `?date=YYYY-MM-DD` (the page's own
-date picker does this) to see a past day instead - for a past date it only
-reads what's already in `daily_status`, it doesn't backfill Waiting rows the
-way today's report does via `ensureDailyStatus`.
-
-Two JSON endpoints share that same function:
-
-- `GET /api/office/morning-report` - PIN-protected (`x-office-pin`), used by
-  the page above.
-- `GET /api/reports/morning-arrivals` - protected instead by
-  `MORNING_REPORT_SECRET` (checked the same way `CRON_SECRET` is: an
-  `Authorization: Bearer <secret>` header, an `x-report-secret` header, or a
-  `?secret=` query param). Optional, general-purpose - a way to pull the
-  report from outside the office UI (a spreadsheet, another script) without
-  the office PIN. Not required for the daily email below, which calls
-  `fetchMorningArrivalReport()` directly rather than going over HTTP.
-
-## Daily AM arrivals email
-
-Once each school morning (`vercel.json` cron, `30 14 * * 1-5` = 10:30 AM
-Eastern **Daylight** Time, weekdays only), `GET /api/cron/morning-report`
-(`CRON_SECRET`-protected, same as the nightly Airtable export) builds the AM
-arrival report for that day and emails it via
-[Resend](https://resend.com)'s HTTP API (`sendMorningReportEmail()` in
-`server.js` - a plain `fetch` call to `api.resend.com`, no SDK dependency
-added). Requires three env vars, all in the "Environment variables" table in
-`README.md`:
-
-- `RESEND_API_KEY` - from the Resend dashboard (Settings → API Keys).
-- `MORNING_REPORT_FROM` - e.g. `TBY Bus Arrivals <report@reports.tiferes.net>`.
-  Resend requires a verified sending domain to deliver to arbitrary
-  recipients (its shared `onboarding@resend.dev` sender only delivers to the
-  Resend account's own email).
-- `MORNING_REPORT_RECIPIENTS` - comma-separated recipient list, e.g.
-  `mrozsansky@tiferes.net,liba@tiferes.net,office@tiferes.net`.
-
-**Sending domain: `reports.tiferes.net`**, verified in Resend (DKIM, the
-`send.reports` MAIL FROM subdomain's MX, and its SPF TXT record are all
-green). Deliberately a subdomain, not the bare `tiferes.net` - that's the
-school's real mail domain (Google Workspace, where the recipients above
-live), so keeping this isolated under `reports.tiferes.net` means nothing
-here can collide with the school's existing SPF/DKIM/MX no matter what
-Resend or GoDaddy do to it. `MORNING_REPORT_FROM` must be an address at
-`reports.tiferes.net` (any local part works, e.g. `report@reports.tiferes.net`)
-- GoDaddy's own "SPF management" feature initially rewrote the `send.reports`
-SPF TXT record into its own indirect `_spfm.` format, which didn't match
-what Resend's checker expected; re-adding it as the literal
-`v=spf1 include:amazonses.com ~all` fixed it.
-
-Any of the three missing makes `/api/cron/morning-report` fail loudly
-(500, logged) rather than silently skip sending - check the Vercel cron's
-run log (Project → Cron Jobs) if a morning's email doesn't arrive.
-
-**DST note:** the cron schedule is a fixed UTC time (`14:30`), which is
-10:30 AM only while Eastern Daylight Time is in effect (mid-March to early
-November). After the fall-back to Eastern Standard Time it'll fire at
-9:30 AM local instead - update the schedule (`30 15 * * 1-5`) around the
-clock change, and back again in spring, or move to a UTC time that's an
-acceptable send time either way.
-
   This wasn't the original design. Two earlier attempts had the office
   browser PUT the file straight to Vercel Blob storage instead (first
   `@vercel/blob`'s client-token flow, then its OIDC-compatible presigned-URL
@@ -336,3 +269,99 @@ Both `put()` and `del()` go through `@vercel/blob`'s `resolveBlobAuth()`,
 which works with either an OIDC-connected store (`BLOB_STORE_ID` - what
 connecting a store adds by default now) or a static `BLOB_READ_WRITE_TOKEN`,
 since both are calls this *server* makes, not the browser.
+
+# Morning arrival report
+
+`/office/morning-report` shows every AM ("To School Arrival Only") route for
+a service day, split into buses that have arrived (earliest first, with
+their arrival time and bus company) and ones still Waiting. It's a plain
+read-only view - `fetchMorningArrivalReport(serviceDate)` in `server.js`
+calls the shared `fetchRouteTimeReport(screen, serviceDate, timeColumn)`
+helper (also used by the afternoon report below) which reuses the same
+`daily_status` rows the live `/office/morning` board writes, it doesn't add
+any new tracking. Defaults to today; pass `?date=YYYY-MM-DD` (the page's own
+date picker does this) to see a past day instead - for a past date it only
+reads what's already in `daily_status`, it doesn't backfill Waiting rows the
+way today's report does via `ensureDailyStatus`.
+
+Two JSON endpoints share that same function:
+
+- `GET /api/office/morning-report` - PIN-protected (`x-office-pin`), used by
+  the page above.
+- `GET /api/reports/morning-arrivals` - protected instead by
+  `MORNING_REPORT_SECRET` (checked the same way `CRON_SECRET` is: an
+  `Authorization: Bearer <secret>` header, an `x-report-secret` header, or a
+  `?secret=` query param). Optional, general-purpose - a way to pull the
+  report from outside the office UI (a spreadsheet, another script) without
+  the office PIN. Not required for the daily email below, which calls
+  `fetchMorningArrivalReport()` directly rather than going over HTTP.
+
+# Afternoon dismissal report
+
+`/office/afternoon-report` is the PM counterpart - one section per dismissal
+screen that actually ran that service day, each split into routes that have
+departed (earliest first, with departure time and company) and ones still
+Waiting. Which screens run is `isFridayServiceDate(serviceDate)` in
+`server.js`: **PRI Dismissal + From School Dismissal** on Mon-Thu (both
+genuinely run that day - see the display schedule under "Bulletin screen"
+above), or just **Friday Dismissal** on a Friday. `serviceDate` is parsed as
+a plain calendar date (`${date}T00:00:00Z`), not routed through
+`SCHOOL_TIME_ZONE`, since a date string's weekday doesn't depend on timezone.
+
+Same two-endpoint pattern as the morning report:
+
+- `GET /api/office/afternoon-report` - PIN-protected, used by the page.
+- `GET /api/reports/afternoon-dismissals` - `MORNING_REPORT_SECRET`-protected,
+  optional/general-purpose (see above).
+
+## Daily report emails
+
+Once each school morning and afternoon (`vercel.json` crons: `30 14 * * 1-5`
+= 10:30 AM and `0 21 * * 1-5` = 5:00 PM, both Eastern **Daylight** Time,
+weekdays only), `GET /api/cron/morning-report` and
+`GET /api/cron/afternoon-report` (both `CRON_SECRET`-protected, same as the
+nightly Airtable export) build that report and email it via
+[Resend](https://resend.com)'s HTTP API - `sendReportEmailViaResend()` in
+`server.js`, a plain `fetch` call to `api.resend.com` shared by both report
+emails (no SDK dependency added). Requires three env vars, all in the
+"Environment variables" table in `README.md` - despite the `MORNING_` prefix
+(kept for compatibility with what was configured first), all three are
+shared by both the morning and afternoon emails:
+
+- `RESEND_API_KEY` - from the Resend dashboard (Settings → API Keys).
+- `MORNING_REPORT_FROM` - e.g. `TBY Bus Report <report@reports.tiferes.net>`.
+  Resend requires a verified sending domain to deliver to arbitrary
+  recipients (its shared `onboarding@resend.dev` sender only delivers to the
+  Resend account's own email).
+- `MORNING_REPORT_RECIPIENTS` - comma-separated recipient list, e.g.
+  `mrozsansky@tiferes.net,liba@tiferes.net,office@tiferes.net`.
+
+**Sending domain: `reports.tiferes.net`**, verified in Resend (DKIM, the
+`send.reports` MAIL FROM subdomain's MX, and its SPF TXT record are all
+green). Deliberately a subdomain, not the bare `tiferes.net` - that's the
+school's real mail domain (Google Workspace, where the recipients above
+live), so keeping this isolated under `reports.tiferes.net` means nothing
+here can collide with the school's existing SPF/DKIM/MX no matter what
+Resend or GoDaddy do to it. `MORNING_REPORT_FROM` must be an address at
+`reports.tiferes.net` (any local part works, e.g. `report@reports.tiferes.net`)
+- GoDaddy's own "SPF management" feature initially rewrote the `send.reports`
+SPF TXT record into its own indirect `_spfm.` format, which didn't match
+what Resend's checker expected; re-adding it as the literal
+`v=spf1 include:amazonses.com ~all` fixed it.
+
+Any of the three missing makes either cron fail loudly (500, logged) rather
+than silently skip sending - check the Vercel cron's run log
+(Project → Cron Jobs) if a report email doesn't arrive.
+
+**DST note:** both cron schedules are fixed UTC times (`14:30`, `21:00`),
+which line up with 10:30 AM/5:00 PM only while Eastern Daylight Time is in
+effect (mid-March to early November). After the fall-back to Eastern
+Standard Time they'll fire an hour earlier local (9:30 AM/4:00 PM) - update
+the schedules (`30 15 * * 1-5`, `0 22 * * 1-5`) around the clock change, and
+back again in spring, or move to UTC times that are acceptable either way.
+
+**Vercel cron limits:** this project now defines three crons (nightly
+Airtable export + the two report emails). Vercel's Hobby plan caps a
+project at 2 cron jobs - if the account is on Hobby, either upgrade to Pro
+or drop one of these crons before deploying, or the deployment/cron
+registration will be rejected.

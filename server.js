@@ -765,11 +765,12 @@ function buildMorningReportEmail(report) {
 // like the Airtable export above, rather than a new SDK dependency. All three env vars must be
 // set (see README/SETUP-NOTES) or this throws instead of silently no-op'ing, since a misconfigured
 // cron should surface as a failed run, not a report nobody gets.
-async function sendMorningReportEmail(report) {
+// Shared by every report email (morning arrivals, afternoon dismissals) - same sender/recipient
+// env vars and the same Resend call, just a different subject/text/html each time.
+async function sendReportEmailViaResend({ subject, text, html }) {
   if (!RESEND_API_KEY || !MORNING_REPORT_FROM || !MORNING_REPORT_RECIPIENTS.length) {
     throw new Error('RESEND_API_KEY, MORNING_REPORT_FROM, and MORNING_REPORT_RECIPIENTS must all be configured.');
   }
-  const { subject, text, html } = buildMorningReportEmail(report);
   const response = await fetch('https://api.resend.com/emails', {
     method: 'POST',
     headers: { Authorization: `Bearer ${RESEND_API_KEY}`, 'Content-Type': 'application/json' },
@@ -778,6 +779,89 @@ async function sendMorningReportEmail(report) {
   if (!response.ok) throw new Error(`Resend send failed ${response.status}: ${await response.text()}`);
   const data = await response.json().catch(() => ({}));
   return { emailId: data.id || null, recipients: MORNING_REPORT_RECIPIENTS };
+}
+
+async function sendMorningReportEmail(report) {
+  return sendReportEmailViaResend(buildMorningReportEmail(report));
+}
+
+// Weekdays: PRI Dismissal then From School Dismissal both run (see the display schedule in
+// SETUP-NOTES.md) - the afternoon report covers both, since both actually happened that day.
+// Friday: only Friday Dismissal runs. `serviceDate` is a plain YYYY-MM-DD string, so its weekday
+// is timezone-independent - no need to route it through SCHOOL_TIME_ZONE like "now" is elsewhere.
+function isFridayServiceDate(serviceDate) {
+  return new Date(`${serviceDate}T00:00:00Z`).getUTCDay() === 5;
+}
+
+const DISMISSAL_SCREEN_LABELS = {
+  'pri-dismissal': 'PRI Dismissal',
+  'from-school': 'From School Dismissal',
+  'friday-dismissal': 'Friday Dismissal',
+};
+
+// One section per dismissal screen that ran that day (see isFridayServiceDate above), each with
+// its own departed (earliest first)/not-yet-departed split - reuses fetchRouteTimeReport, the same
+// helper the morning report is built on, just keyed on departure_time instead of arrival_time.
+async function fetchAfternoonDismissalReport(serviceDate) {
+  const date = serviceDate || toSchoolDateString();
+  const screens = isFridayServiceDate(date) ? ['friday-dismissal'] : ['pri-dismissal', 'from-school'];
+  const sections = [];
+  for (const screen of screens) {
+    const { done, pending, totalRoutes } = await fetchRouteTimeReport(screen, date, 'departure_time');
+    const rename = (route) => ({ ...route, departureTime: route.eventTime, departureTimeFormatted: route.eventTimeFormatted });
+    sections.push({
+      screen,
+      label: DISMISSAL_SCREEN_LABELS[screen] || screen,
+      departed: done.map(rename),
+      notDeparted: pending.map(rename),
+      totalRoutes,
+    });
+  }
+  return { serviceDate: date, sections };
+}
+
+function buildAfternoonReportEmail(report) {
+  const textSections = report.sections.map((section) => {
+    const departedLines = section.departed.map((route) => `${routeLabel(route)} — ${route.departureTimeFormatted}`);
+    const notDepartedLines = section.notDeparted.map((route) => `${routeLabel(route)} — not yet departed`);
+    return [
+      `${section.label}:`,
+      ...(departedLines.length ? departedLines : ['(no buses had departed yet)']),
+      ...(notDepartedLines.length ? ['Not yet departed:', ...notDepartedLines] : []),
+    ].join('\n');
+  });
+  const text = [`PM bus departures for ${report.serviceDate}:`, '', textSections.join('\n\n')].join('\n');
+
+  const htmlSections = report.sections
+    .map((section) => {
+      const rows = section.departed
+        .map((route) => `<tr><td>${escapeHtml(route.name)}</td><td>${escapeHtml(route.company)}</td><td><strong>${escapeHtml(route.departureTimeFormatted)}</strong></td></tr>`)
+        .join('');
+      const notDepartedHtml = section.notDeparted.length
+        ? `<p>Not yet departed: ${section.notDeparted.map((route) => escapeHtml(routeLabel(route))).join(', ')}</p>`
+        : '';
+      return `
+        <h3 style="margin: 16px 0 8px;">${escapeHtml(section.label)}</h3>
+        <table cellpadding="6" style="border-collapse: collapse;">
+          <thead><tr><th align="left">Route</th><th align="left">Company</th><th align="left">Departed</th></tr></thead>
+          <tbody>${rows || '<tr><td colspan="3">No buses had departed yet.</td></tr>'}</tbody>
+        </table>
+        ${notDepartedHtml}
+      `;
+    })
+    .join('');
+  const html = `
+    <div style="font-family: -apple-system, Arial, sans-serif;">
+      <h2 style="margin: 0 0 8px;">PM Bus Departures — ${escapeHtml(report.serviceDate)}</h2>
+      ${htmlSections}
+    </div>
+  `;
+
+  return { subject: `TBY PM Bus Departures — ${report.serviceDate}`, text, html };
+}
+
+async function sendAfternoonReportEmail(report) {
+  return sendReportEmailViaResend(buildAfternoonReportEmail(report));
 }
 
 async function fetchStatus(routeId, screen) {
@@ -1340,6 +1424,29 @@ app.get('/api/reports/morning-arrivals', async (req, res) => {
   }
 });
 
+// Same shape as the two morning-report endpoints above, for the afternoon dismissal report.
+app.get('/api/office/afternoon-report', async (req, res) => {
+  if (!validateOfficePin(req, res)) return;
+  try {
+    const report = await fetchAfternoonDismissalReport(req.query.date);
+    res.json(report);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/reports/afternoon-dismissals', async (req, res) => {
+  if (!validateReportSecret(req, res)) return;
+  try {
+    const report = await fetchAfternoonDismissalReport(req.query.date);
+    res.json(report);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Registered before the /api/office/:screen wildcard below - Express matches routes in
 // registration order, and a wildcard segment (:screen) would otherwise swallow this literal path
 // (:screen = "screen-override") before it ever reached this handler.
@@ -1757,6 +1864,20 @@ app.get('/api/cron/morning-report', async (req, res) => {
   }
 });
 
+// Fires once each school afternoon (see vercel.json) - builds today's dismissal report (PRI +
+// From School, or just Friday Dismissal on a Friday - see isFridayServiceDate) and emails it.
+app.get('/api/cron/afternoon-report', async (req, res) => {
+  if (!validateCronSecret(req, res)) return;
+  try {
+    const report = await fetchAfternoonDismissalReport();
+    const emailResult = await sendAfternoonReportEmail(report);
+    res.json({ ok: true, serviceDate: report.serviceDate, sections: report.sections.map((s) => s.screen), ...emailResult });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.get(['/office', '/office/morning', '/office/from-school', '/office/pri-dismissal', '/office/friday-dismissal'], (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'office.html'));
 });
@@ -1767,6 +1888,10 @@ app.get('/office/bulletin', (req, res) => {
 
 app.get('/office/morning-report', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'office-morning-report.html'));
+});
+
+app.get('/office/afternoon-report', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'office-afternoon-report.html'));
 });
 
 app.get(['/current', '/from-school', '/pri-dismissal', '/friday-dismissal', '/bulletin'], (req, res) => {
