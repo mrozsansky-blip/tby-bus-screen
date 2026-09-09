@@ -38,6 +38,11 @@ Parking spots have no Airtable source — they're entered once via
   `/office/friday-dismissal` - office control panels (PIN-protected)
 - `/office/bulletin` - upload/replace/remove the Bulletin screen's file
   (PIN-protected, same PIN as the other office pages)
+- `/office/morning-report` - every AM route for the day, in arrival order,
+  plus any that haven't arrived yet (PIN-protected). Same data is available
+  as JSON from `/api/office/morning-report` (PIN-protected, for staff) and
+  `/api/reports/morning-arrivals` (protected by `MORNING_REPORT_SECRET`
+  instead, for the daily report email job - see below)
 - `/setup.html` - one-time/occasional admin tools: import routes & parking
   spots directly, or sync routes from Airtable (admin-secret protected)
 
@@ -59,6 +64,7 @@ TURSO_AUTH_TOKEN=your Turso auth token
 OFFICE_PIN=PIN for the office control panel
 ADMIN_SECRET=secret for /api/admin/* routes (setup.html, sync, import)
 CRON_SECRET=secret the nightly export cron authenticates with
+MORNING_REPORT_SECRET=secret the daily morning-arrivals report job authenticates with
 AIRTABLE_TOKEN=your Airtable personal access token
 AIRTABLE_BASE_ID=appYCWLjqODndV4n2
 BLOB_READ_WRITE_TOKEN=from the Blob store's own page - see below

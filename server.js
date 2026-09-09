@@ -13,6 +13,7 @@ const OFFICE_PIN = process.env.OFFICE_PIN || '';
 const ADMIN_SECRET = process.env.ADMIN_SECRET || '';
 const SCHOOL_TIME_ZONE = process.env.SCHOOL_TIME_ZONE || 'America/New_York';
 const CRON_SECRET = process.env.CRON_SECRET || '';
+const MORNING_REPORT_SECRET = process.env.MORNING_REPORT_SECRET || '';
 
 const AIRTABLE_TOKEN = process.env.AIRTABLE_TOKEN || '';
 const AIRTABLE_BASE_ID = process.env.AIRTABLE_BASE_ID || '';
@@ -273,6 +274,23 @@ function validateCronSecret(req, res) {
   if (!CRON_SECRET && !isProductionRuntime()) return true;
   if (getCronSecret(req) === CRON_SECRET) return true;
   res.status(401).json({ error: 'Invalid cron secret' });
+  return false;
+}
+
+// Same lookup order as getCronSecret (Bearer header, x-<name> header, ?secret= query param) - used
+// by the machine-readable /api/reports/morning-arrivals endpoint that the daily report email job
+// fetches from outside the office UI, so it can't rely on the OFFICE_PIN prompt like a person would.
+function getReportSecret(req) {
+  const auth = req.headers.authorization || '';
+  if (auth.toLowerCase().startsWith('bearer ')) return auth.slice(7).trim();
+  return req.headers['x-report-secret'] || req.query.secret || '';
+}
+
+function validateReportSecret(req, res) {
+  if (!requireConfiguredSecret(MORNING_REPORT_SECRET, 'MORNING_REPORT_SECRET', res)) return false;
+  if (!MORNING_REPORT_SECRET && !isProductionRuntime()) return true;
+  if (getReportSecret(req) === MORNING_REPORT_SECRET) return true;
+  res.status(401).json({ error: 'Invalid report secret' });
   return false;
 }
 
@@ -631,6 +649,49 @@ async function fetchRoutesForScreen(screen, options = {}) {
     routes: result.rows.map((row) => mapRouteRow(row, options.office, textSummaryByRoute.get(row.route_id))),
     spots,
   };
+}
+
+// Every AM ("morning arrival") route for a given service day, split into buses that have already
+// arrived (earliest first) and ones still Waiting. Backs both the /office/morning-report page and
+// the /api/reports/morning-arrivals endpoint the daily report email job calls. Only touches
+// ensureDailyStatus (which would create today's Waiting rows) when reporting on today itself - a
+// report for a past date should reflect what actually happened, not backfill rows for it.
+async function fetchMorningArrivalReport(serviceDate) {
+  await ensureSchema();
+  const date = serviceDate || toSchoolDateString();
+  const filter = screenFilter('morning');
+
+  if (date === toSchoolDateString()) {
+    const routes = await run(`SELECT id FROM routes WHERE active = 1 AND (${filter.sql})`, filter.args);
+    for (const route of routes.rows) await ensureDailyStatus(route.id, 'morning', date);
+  }
+
+  const result = await run(
+    `SELECT routes.display_name, routes.route_code, routes.sort_order,
+            daily_status.current_status, daily_status.arrival_time
+     FROM routes
+     JOIN daily_status
+       ON daily_status.route_id = routes.id
+      AND daily_status.service_date = ?
+      AND daily_status.screen = 'morning'
+     WHERE routes.active = 1 AND (${filter.sql})
+     ORDER BY routes.sort_order ASC, routes.display_name COLLATE NOCASE ASC`,
+    [date, ...filter.args]
+  );
+
+  const routes = result.rows.map((row) => ({
+    name: row.display_name || row.route_code || 'Bus',
+    status: row.current_status || 'Waiting',
+    arrivalTime: row.arrival_time || null,
+    arrivalTimeFormatted: row.arrival_time ? formatSchoolTime(new Date(row.arrival_time)) : null,
+  }));
+
+  const arrived = routes
+    .filter((route) => route.arrivalTime)
+    .sort((a, b) => a.arrivalTime.localeCompare(b.arrivalTime));
+  const notArrived = routes.filter((route) => !route.arrivalTime);
+
+  return { serviceDate: date, arrived, notArrived, totalRoutes: routes.length };
 }
 
 async function fetchStatus(routeId, screen) {
@@ -1166,6 +1227,33 @@ app.get('/api/routes/:screen', async (req, res) => {
   }
 });
 
+// Office-facing view of the AM arrival report (see /office/morning-report). PIN-gated like the
+// other office data endpoints - a person opening that page in a browser.
+app.get('/api/office/morning-report', async (req, res) => {
+  if (!validateOfficePin(req, res)) return;
+  try {
+    const report = await fetchMorningArrivalReport(req.query.date);
+    res.json(report);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Machine-facing version of the same report, gated by MORNING_REPORT_SECRET instead of the office
+// PIN - this is what the daily report email job fetches from outside the office UI. See
+// SETUP-NOTES.md for how that job is wired up.
+app.get('/api/reports/morning-arrivals', async (req, res) => {
+  if (!validateReportSecret(req, res)) return;
+  try {
+    const report = await fetchMorningArrivalReport(req.query.date);
+    res.json(report);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Registered before the /api/office/:screen wildcard below - Express matches routes in
 // registration order, and a wildcard segment (:screen) would otherwise swallow this literal path
 // (:screen = "screen-override") before it ever reached this handler.
@@ -1574,6 +1662,10 @@ app.get(['/office', '/office/morning', '/office/from-school', '/office/pri-dismi
 
 app.get('/office/bulletin', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'office-bulletin.html'));
+});
+
+app.get('/office/morning-report', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'office-morning-report.html'));
 });
 
 app.get(['/current', '/from-school', '/pri-dismissal', '/friday-dismissal', '/bulletin'], (req, res) => {

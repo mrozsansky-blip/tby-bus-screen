@@ -21,6 +21,7 @@
     { "source": "/office/pri-dismissal", "destination": "/api/index" },
     { "source": "/office/friday-dismissal", "destination": "/api/index" },
     { "source": "/office/bulletin", "destination": "/api/index" },
+    { "source": "/office/morning-report", "destination": "/api/index" },
     { "source": "/api/(.*)", "destination": "/api/index" }
   ]
 }

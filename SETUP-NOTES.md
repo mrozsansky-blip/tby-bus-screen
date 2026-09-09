@@ -224,6 +224,36 @@ pathname, filename, mime type, size, upload time).
   client - the browser talks only to this app's own domain, never to
   Vercel's infrastructure directly.
 
+# Morning arrival report
+
+`/office/morning-report` shows every AM ("To School Arrival Only") route for
+a service day, split into buses that have arrived (earliest first, with
+their arrival time) and ones still Waiting. It's a plain read-only view -
+`fetchMorningArrivalReport(serviceDate)` in `server.js` reuses the same
+`daily_status` rows the live `/office/morning` board writes, it doesn't add
+any new tracking. Defaults to today; pass `?date=YYYY-MM-DD` (the page's own
+date picker does this) to see a past day instead - for a past date it only
+reads what's already in `daily_status`, it doesn't backfill Waiting rows the
+way today's report does via `ensureDailyStatus`.
+
+Two JSON endpoints share that same function:
+
+- `GET /api/office/morning-report` - PIN-protected (`x-office-pin`), used by
+  the page above.
+- `GET /api/reports/morning-arrivals` - protected by `MORNING_REPORT_SECRET`
+  instead (checked the same way `CRON_SECRET` is: an `Authorization: Bearer
+  <secret>` header, an `x-report-secret` header, or a `?secret=` query
+  param). This is the one meant for a job running outside the office UI -
+  set `MORNING_REPORT_SECRET` in Vercel to some random value and use it from
+  there.
+
+**Daily email.** This repo doesn't send email itself - there's no
+transactional-email dependency wired in. The actual daily send is a Claude
+Routine (a scheduled trigger) that fetches
+`/api/reports/morning-arrivals?secret=...` and emails the result via Gmail;
+ask Claude to show or change its schedule/recipients rather than looking for
+it in this codebase.
+
   This wasn't the original design. Two earlier attempts had the office
   browser PUT the file straight to Vercel Blob storage instead (first
   `@vercel/blob`'s client-token flow, then its OIDC-compatible presigned-URL
