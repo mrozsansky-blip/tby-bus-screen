@@ -78,9 +78,43 @@
         document.getElementById('clock').textContent = formatTime(new Date());
       }
 
+      // The kiosk layout (styles.css's .bus-grid, >=900px) is a fixed-height, non-scrolling screen -
+      // a CSS media query can react to viewport *width*, but nothing in CSS reacts to the *route
+      // count*, so a fixed column count (repeat(5, 1fr) by default) eventually needs more rows than
+      // fit as more real routes get synced in, and the extra ones get clipped by `overflow: hidden`
+      // instead of shown smaller. Below the mobile breakpoint the page scrolls instead (see
+      // styles.css), so extra rows there are harmless - left on the fixed 2-column CSS layout.
+      let lastRouteCount = 0;
+
+      function layoutGrid(count) {
+        const grid = document.getElementById('bus-grid');
+        if (!count || window.innerWidth < 900) {
+          grid.style.removeProperty('grid-template-columns');
+          return;
+        }
+        const width = grid.clientWidth || window.innerWidth;
+        const height = grid.clientHeight || window.innerHeight;
+        // Aspect-ratio balance as a starting guess - usually close, cheap to compute.
+        let columns = Math.max(1, Math.min(count, Math.round(Math.sqrt((count * width) / height))));
+        grid.style.gridTemplateColumns = `repeat(${columns}, 1fr)`;
+
+        // The guess alone isn't always enough: a narrower column can wrap a route's status text
+        // (e.g. "NOT HERE YET") onto a second line, which raises that card's real minimum height
+        // past what the guess assumed - so measure what actually rendered and add columns (fewer,
+        // taller rows) until every card genuinely fits, instead of trusting the estimate.
+        let guard = 0;
+        while (columns < count && grid.scrollHeight > grid.clientHeight + 1 && guard < 20) {
+          columns++;
+          grid.style.gridTemplateColumns = `repeat(${columns}, 1fr)`;
+          guard++;
+        }
+      }
+
       function renderRoutes(routes) {
         const grid = document.getElementById('bus-grid');
+        lastRouteCount = routes.length;
         if (!routes.length) {
+          grid.style.removeProperty('grid-template-columns');
           grid.innerHTML = '<div class="empty">No bus routes are set for this screen.</div>';
           return;
         }
@@ -100,6 +134,7 @@
             </article>
           `;
         }).join('');
+        layoutGrid(routes.length);
       }
 
       function escapeHtml(value) {
@@ -198,6 +233,12 @@
         source.onmessage = () => loadRoutes(true);
         source.onerror = () => {};
       }
+
+      let resizeTimer;
+      window.addEventListener('resize', () => {
+        window.clearTimeout(resizeTimer);
+        resizeTimer = window.setTimeout(() => layoutGrid(lastRouteCount), 150);
+      });
 
       setTitle();
       updateClock();

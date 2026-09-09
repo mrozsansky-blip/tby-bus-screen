@@ -64,6 +64,14 @@ body {
 }
 
 .bus-grid {
+  /* Without this, a grid item's default min-height is its content's intrinsic min-content size, not
+     0 - so once there are enough routes that the cards' combined minimum content height exceeds
+     this element's "1fr" share of .screen-shell's fixed 100vh, this element grows past that share
+     to fit it instead of respecting it, and the excess gets clipped by html/body's overflow: hidden
+     (see below) rather than the row's own 1fr rows in .bus-grid ever getting a chance to shrink
+     .bus-card - which already sets min-height: 0 - down to fit. That's what "some boxes are getting
+     cut off" turned out to be. */
+  min-height: 0;
   height: 100%;
   display: grid;
   grid-template-columns: repeat(5, 1fr);
